@@ -17,6 +17,26 @@ namespace GroupRun
         /// GroupRun.exe --selftest dir    the sim with hidden windows and a scripted run, boards saved as PNGs
         /// GroupRun.exe --states dir      every setup and connection problem as the board shows it, as PNGs
         /// </summary>
+        /// <summary>
+        /// Every launch starts the latest release: nothing is running yet, so a newer one is installed without
+        /// asking. Offline or slow, the launch goes on with this version.
+        /// </summary>
+        static bool UpdatedOnLaunch()
+        {
+            try
+            {
+                var check = Updater.LatestAsync();
+                if (!check.Wait(TimeSpan.FromSeconds(4)) || check.Result == null || check.Result.Version <= Updater.Current)
+                    return false;
+                Updater.InstallAsync(check.Result).GetAwaiter().GetResult();
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         [STAThread]
         static void Main(string[] args)
         {
@@ -62,6 +82,9 @@ namespace GroupRun
                 SelfTest.Run(args[1]);
                 return;
             }
+
+            if (UpdatedOnLaunch())
+                return; // the new version is starting in our place
 
             var settings = Settings.Load();
             if (!settings.IsComplete)
