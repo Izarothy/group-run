@@ -147,14 +147,15 @@ namespace GroupRun
                     Ui.Tell(null, Settings.CantSave + " The join code changes every launch until then.");
             }
             var stable = new JoinCode { Host = settings.HostTopic, Secret = settings.HostSecret }.ToString();
+            var journal = System.IO.Path.Combine(AppContext.BaseDirectory, "hub.jsonl"); // next to the exe, as settings.json
             Hub hub;
             try
             {
-                hub = new Hub(settings.HostPort, settings.HostSecret);
+                hub = new Hub(settings.HostPort, settings.HostSecret, journal);
             }
             catch (Exception e) when (e is SocketException || e is ArgumentOutOfRangeException)
             {
-                hub = new Hub(0, settings.HostSecret); // the usual port is taken: any free one works behind the tunnel
+                hub = new Hub(0, settings.HostSecret, journal); // the usual port is taken: any free one works behind the tunnel
             }
             var form = new MainForm(settings, new HubRelay(hub), new GameFeed(settings));
             Tunnel tunnel = null;

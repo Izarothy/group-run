@@ -87,16 +87,18 @@ namespace GroupRun
         sealed class Entry
         {
             public string Json;
-            public bool ForRunners;
             public long At; // hub stopwatch ms
         }
 
         static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+        static readonly TimeSpan JournalKept = TimeSpan.FromHours(1); // untouched longer than that, it's an old session
 
         readonly WsServer server;
         readonly string secret;
+        readonly string journal;
         readonly Stopwatch clock = Stopwatch.StartNew();
         readonly List<Entry> history = new List<Entry>();
+        readonly Dictionary<string, Entry> latestUpdate = new Dictionary<string, Entry>(); // runner id: their entry in the history
         readonly List<Peer> peers = new List<Peer>();
         readonly CancellationTokenSource stop = new CancellationTokenSource();
 
@@ -106,10 +108,14 @@ namespace GroupRun
         public int Port => server.Port;
 
         /// <param name="port">0 picks a free port (the sim does that).</param>
-        public Hub(int port, string secret)
+        /// <param name="journal">The admin's app: a file that keeps the history too, so that the app started again
+        /// after a crash (or a close by mistake) carries on with the run where it was. Null keeps it in memory only.</param>
+        public Hub(int port, string secret, string journal = null)
         {
             this.secret = secret;
+            this.journal = journal;
             server = new WsServer(port);
+            Restore();
             Task.Run(Accept);
         }
 
@@ -117,21 +123,114 @@ namespace GroupRun
 
         void Pass(string json, Dictionary<string, object> body)
         {
-            var entry = new Entry
-            {
-                Json = json,
-                ForRunners = (body["t"] as string) != "detail",
-                At = clock.ElapsedMilliseconds,
-            };
+            var forRunners = (body["t"] as string) != "detail";
             lock (history) // one order for everyone: concurrent senders must not interleave differently per peer
             {
-                history.Add(entry);
+                if (forRunners)
+                {
+                    Keep(json, body, clock.ElapsedMilliseconds);
+                    Journal(json, body);
+                }
                 Local.Enqueue(new Message { Body = body, Age = TimeSpan.Zero });
-                if (entry.ForRunners)
+                if (forRunners)
                     lock (peers)
                         foreach (var peer in peers)
                             peer.Send("0\t" + json);
             }
+        }
+
+        /// <summary>
+        /// Into the history that is replayed to everyone who (re)connects. Detail only goes to the admin, live, so it
+        /// isn't kept. Of a runner's updates only the latest matters to a replay, so it takes the place of the one
+        /// before, in its place (join order picks the colours): a few hours' heartbeats and XP updates would
+        /// otherwise be thousands of lines for every reconnect. Everything else (controls, the split list and each
+        /// split's time) is kept as it came, in order.
+        /// </summary>
+        void Keep(string json, Dictionary<string, object> body, long at)
+        {
+            var runner = (body["t"] as string) == "runner" && body.TryGetValue("id", out var id) ? id as string : null;
+            if (runner != null && latestUpdate.TryGetValue(runner, out var known))
+            {
+                known.Json = json;
+                known.At = at;
+                return;
+            }
+            var entry = new Entry { Json = json, At = at };
+            history.Add(entry);
+            if (runner != null)
+                latestUpdate[runner] = entry;
+        }
+
+        /// <summary>One line per message: when (UTC ticks), a tab, the JSON. A reset starts it over.</summary>
+        void Journal(string json, Dictionary<string, object> body)
+        {
+            if (journal == null)
+                return;
+            var line = DateTime.UtcNow.Ticks + "\t" + json + Environment.NewLine;
+            var reset = (body["t"] as string) == "control" && (body.TryGetValue("action", out var a) ? a as string : null) == "reset";
+            try
+            {
+                if (reset)
+                    File.WriteAllText(journal, line); // a new run: nothing before it matters to a restart
+                else
+                    File.AppendAllText(journal, line);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                // the run goes on; only a restart would miss this message
+            }
+        }
+
+        /// <summary>
+        /// Started again: the journal's messages go back into the history, aged by how long ago they were, so the
+        /// admin's own board (through <see cref="Local"/>) and every runner's replay rebuild the run as it was,
+        /// a finished one included (the runners' boards still show it finished). A journal untouched for
+        /// <see cref="JournalKept"/> is an earlier session and is dropped.
+        /// </summary>
+        void Restore()
+        {
+            if (journal == null || !File.Exists(journal))
+                return;
+            string[] lines;
+            try
+            {
+                lines = File.ReadAllLines(journal);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                return;
+            }
+            var now = DateTime.UtcNow.Ticks;
+            var restored = new List<(long AgeMs, string Json, Dictionary<string, object> Body)>();
+            foreach (var line in lines)
+            {
+                var tab = line.IndexOf('\t');
+                if (tab < 0 || !long.TryParse(line.Substring(0, tab), out var ticks))
+                    continue;
+                var json = line.Substring(tab + 1);
+                try
+                {
+                    var body = Json.Deserialize<Dictionary<string, object>>(json);
+                    if (body != null && body.ContainsKey("t"))
+                        restored.Add((Math.Max(1, (now - ticks) / TimeSpan.TicksPerMillisecond), json, body));
+                }
+                catch (Exception e) when (e is ArgumentException || e is InvalidOperationException)
+                {
+                    // the line the crash cut off
+                }
+            }
+            if (restored.Count == 0 || TimeSpan.FromMilliseconds(restored.Last().AgeMs) > JournalKept)
+            {
+                try { File.Delete(journal); } catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { }
+                return;
+            }
+            var at = clock.ElapsedMilliseconds;
+            lock (history)
+                foreach (var (ageMs, json, body) in restored)
+                {
+                    Keep(json, body, at - ageMs);
+                    Local.Enqueue(new Message { Body = body, Age = TimeSpan.FromMilliseconds(ageMs) });
+                }
         }
 
         async Task Accept()
@@ -174,7 +273,7 @@ namespace GroupRun
                 {
                     var now = clock.ElapsedMilliseconds;
                     peer.Send("ok"); // sends go out in order: the welcome, then the replay
-                    foreach (var e in history.Where(e => e.ForRunners))
+                    foreach (var e in history)
                         peer.Send($"{now - e.At}\t{e.Json}");
                     lock (peers)
                         peers.Add(peer);
