@@ -54,6 +54,7 @@ namespace GroupRun
         readonly string character;
         long position;
         string partial = "";
+        readonly Decoder utf8 = Encoding.UTF8.GetDecoder(); // keeps a character cut in two by a read for the next one
 
         public GameLog(string path, string character)
         {
@@ -64,16 +65,57 @@ namespace GroupRun
 
         public bool Exists => File.Exists(path);
 
+        /// <summary>
+        /// What the log said in its last <paramref name="bytes"/> before the app started, for an app started in
+        /// the middle of a session (a restart, a crash): never read as new.
+        /// </summary>
+        public List<GameEvent> ReadEarlier(int bytes)
+        {
+            var events = new List<GameEvent>();
+            try
+            {
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    var from = Math.Max(0, Math.Min(position, stream.Length) - bytes);
+                    var buffer = new byte[Math.Min(position, stream.Length) - from];
+                    stream.Seek(from, SeekOrigin.Begin);
+                    var read = stream.Read(buffer, 0, buffer.Length);
+                    var lines = Encoding.UTF8.GetString(buffer, 0, read).Split('\n');
+                    for (var i = from > 0 ? 1 : 0; i < lines.Length; i++) // a cut first line isn't a line
+                        if (Parse(lines[i].TrimEnd('\r')) is GameEvent e)
+                            events.Add(e);
+                }
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                // no log yet, or not readable now: start without it
+            }
+            return events;
+        }
+
         public List<GameEvent> ReadNew()
         {
             var events = new List<GameEvent>();
             if (!Exists)
                 return events;
 
-            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            FileStream stream;
+            try
+            {
+                stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                return events; // another program holds it without sharing, or it was deleted just now: next tick
+            }
+            using (stream)
             {
                 if (stream.Length < position)
-                    position = 0; // log was truncated or replaced
+                {
+                    position = 0; // log was truncated or replaced: so is what was left of its last line
+                    partial = "";
+                    utf8.Reset();
+                }
                 if (stream.Length == position)
                     return events;
 
@@ -82,7 +124,9 @@ namespace GroupRun
                 var read = stream.Read(buffer, 0, buffer.Length);
                 position += read;
 
-                var lines = (partial + Encoding.UTF8.GetString(buffer, 0, read)).Split('\n');
+                var text = new char[utf8.GetCharCount(buffer, 0, read)];
+                utf8.GetChars(buffer, 0, read, text, 0);
+                var lines = (partial + new string(text)).Split('\n');
                 partial = lines[lines.Length - 1];
                 for (var i = 0; i < lines.Length - 1; i++)
                 {
@@ -93,6 +137,9 @@ namespace GroupRun
             }
             return events;
         }
+
+        /// <summary>Character names are unique whatever their case, so the one typed in Settings needn't match it.</summary>
+        bool IsCharacter(string name) => string.Equals(name, character, StringComparison.OrdinalIgnoreCase);
 
         GameEvent Parse(string raw)
         {
@@ -124,14 +171,14 @@ namespace GroupRun
 
             if (LevelUp.Match(message) is Match level && level.Success)
             {
-                if (character.Length > 0 && level.Groups[1].Value != character) return null;
+                if (character.Length > 0 && !IsCharacter(level.Groups[1].Value)) return null;
                 e.Kind = GameEventKind.LevelUp;
                 e.Level = int.Parse(level.Groups[2].Value);
                 e.Text = level.Groups[1].Value;
             }
             else if (Slain.Match(message) is Match slain && slain.Success)
             {
-                if (character.Length > 0 && slain.Groups[1].Value != character) return null;
+                if (character.Length > 0 && !IsCharacter(slain.Groups[1].Value)) return null;
                 e.Kind = GameEventKind.Death;
                 e.Text = slain.Groups[1].Value;
             }

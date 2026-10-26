@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
@@ -76,11 +77,11 @@ namespace GroupRun
         }
 
         /// <summary>Download, check and swap in the new exe, then start it. The caller exits afterwards.</summary>
-        public static async Task InstallAsync(Release release)
+        public static async Task InstallAsync(Release release, CancellationToken cancel = default)
         {
             if (release.Sha256.Length == 0)
                 throw new InvalidOperationException("The release has no checksum, so the download can't be verified.");
-            var bytes = await Http.GetByteArrayAsync(release.DownloadUrl);
+            var bytes = await (await Http.GetAsync(release.DownloadUrl, cancel)).EnsureSuccessStatusCode().Content.ReadAsByteArrayAsync();
             string actual;
             using (var sha = SHA256.Create())
                 actual = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
@@ -94,7 +95,15 @@ namespace GroupRun
             if (File.Exists(old))
                 File.Delete(old);
             File.Move(exe, old);
-            File.Move(fresh, exe);
+            try
+            {
+                File.Move(fresh, exe);
+            }
+            catch (Exception)
+            {
+                File.Move(old, exe); // antivirus still scanning the new file, say: keep this version rather than no GroupRun.exe
+                throw;
+            }
             Process.Start(exe);
         }
 

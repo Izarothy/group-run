@@ -18,7 +18,7 @@ namespace GroupRun
     /// </summary>
     public sealed class MainForm : Form
     {
-        static readonly TimeSpan XpUpdateEvery = TimeSpan.FromSeconds(10);  // the XP % is meant to move in steps, not live
+        static readonly TimeSpan XpUpdateEvery = TimeSpan.FromSeconds(3);
         static readonly TimeSpan HeartbeatEvery = TimeSpan.FromSeconds(15);
         static readonly TimeSpan NoteShown = TimeSpan.FromSeconds(6);
         static readonly TimeSpan AutoStartHoldoff = TimeSpan.FromSeconds(2); // after a "not ready", let everyone's state settle
@@ -94,6 +94,52 @@ namespace GroupRun
             tick.Start();
             feed.Update(local, run, DateTime.Now, new List<Dictionary<string, object>>());
             SendSelf(force: true);
+            if (settings.IsAdmin)
+                PublishSplits();
+        }
+
+        /// <summary>Admin: the split list from the .lss in Settings, with the group's PB and golds, to everyone.</summary>
+        void PublishSplits()
+        {
+            string[] names;
+            try
+            {
+                names = settings.SplitsFile.Length > 0 ? SplitList.NamesFromLss(settings.SplitsFile) : new string[0];
+            }
+            catch (Exception e) when (e is System.IO.IOException || e is UnauthorizedAccessException || e is System.Xml.XmlException)
+            {
+                names = new string[0];
+                ShowNote("Can't read the splits file");
+            }
+            var (pb, gold) = SplitRecords.Load(names);
+            relay.Publish(new Dictionary<string, object>
+            {
+                ["t"] = "splits", ["names"] = names,
+                ["pb"] = pb.Select(SplitRecords.ToMs).ToArray(), ["gold"] = gold.Select(SplitRecords.ToMs).ToArray(),
+            });
+        }
+
+        /// <summary>Admin: a runner's zone entries (from their detail) time the splits for those zones.</summary>
+        void TimeSplits(Dictionary<string, object> body)
+        {
+            if (!settings.IsAdmin || run.Phase == Phase.Waiting || !run.Splits.Any)
+                return; // batches sent before Finish or during a resume countdown still count
+            if (!(body.TryGetValue("ev", out var ev) && ev is System.Collections.IEnumerable records))
+                return;
+            foreach (var record in records.OfType<Dictionary<string, object>>())
+            {
+                if (Get(record, "k") != "zone" || !record.TryGetValue("s", out var s))
+                    continue;
+                var at = TimeSpan.FromSeconds(Convert.ToDouble(s));
+                foreach (var index in run.Splits.OpenFor(Get(record, "zone")).ToList())
+                    PublishSplit(index, at);
+            }
+        }
+
+        void PublishSplit(int index, TimeSpan at)
+        {
+            if (run.Splits.Mark(index, at))
+                relay.Publish(new Dictionary<string, object> { ["t"] = "split", ["i"] = index, ["ms"] = (long)at.TotalMilliseconds });
         }
 
         /// <summary>Tries hosting again (the tunnel); clicking the "can't reach you" notice runs it.</summary>
@@ -142,7 +188,18 @@ namespace GroupRun
         {
             var now = DateTime.Now;
             while (relay.Inbox.TryDequeue(out var message))
-                Receive(message, now);
+            {
+                try
+                {
+                    Receive(message, now);
+                }
+                catch (Exception e) when (e is KeyNotFoundException || e is FormatException || e is InvalidCastException
+                    || e is OverflowException || e is ArgumentException)
+                {
+                    // a message this version can't read (a field missing or of another type, say from another app
+                    // version): skip it. Thrown, it would stop this tick on every board, again on every replay.
+                }
+            }
 
             KeepHistory(now); // before reading the feed, so the first zone of a run lands in its log
             var fresh = new List<Dictionary<string, object>>();
@@ -219,8 +276,19 @@ namespace GroupRun
                     if (Updater.TryParse(Get(body, "ver"), out var version) && version > newestSeen)
                         NewerVersionSeen(version, runner.Name);
                     break;
-                case "control":
-                    if (Get(body, "from") == self.Id) return; // already applied when we sent it
+                case "detail":
+                    TimeSplits(body);
+                    break;
+                case "splits":
+                    run.Splits.Define(((System.Collections.IEnumerable)body["names"]).Cast<object>().Select(n => n.ToString()).ToArray(),
+                        SplitRecords.FromMs(((System.Collections.IEnumerable)body["pb"]).Cast<object>()),
+                        SplitRecords.FromMs(((System.Collections.IEnumerable)body["gold"]).Cast<object>()));
+                    FitToBoard();
+                    break;
+                case "split":
+                    run.Splits.Mark(Convert.ToInt32(body["i"]), TimeSpan.FromMilliseconds(Convert.ToDouble(body["ms"])));
+                    break;
+                case "control": // our own too, as the hub ordered it: every board applies the same sequence
                     run.Apply(Get(body, "action"), TimeSpan.FromMilliseconds(Convert.ToDouble(body["elapsedMs"])), message.Age,
                         Get(body, "check"), Get(body, "from"));
                     break;
@@ -248,9 +316,27 @@ namespace GroupRun
                     SendControl(action, Guid.NewGuid().ToString("N").Substring(0, 8));
                     break;
                 case "finish":
+                    if (run.Splits.Any)
+                        PublishSplit(run.Splits.Names.Length - 1, run.Elapsed); // the last split is the finish
                     SendControl(action);
                     if (!sim)
-                        ShowNote("saved to " + System.IO.Path.GetFileName(History.Save(run)));
+                    {
+                        try
+                        {
+                            if (run.Splits.Any)
+                                SplitRecords.Record(run.Splits);
+                            ShowNote("saved to " + System.IO.Path.GetFileName(History.Save(run)));
+                        }
+                        catch (Exception e) when (e is System.IO.IOException || e is UnauthorizedAccessException)
+                        {
+                            ShowNote("Can't save the run"); // runs.csv open in Excel, a read-only folder
+                        }
+                    }
+                    break;
+                case "reset":
+                    SendControl(action);
+                    if (settings.IsAdmin)
+                        PublishSplits(); // the next run compares against the PB and golds just saved
                     break;
                 case "settings":
                     if (hostProblem.Length > 0 && HostRetry != null && run.Phase == Phase.Waiting)
@@ -277,7 +363,6 @@ namespace GroupRun
 
         void SendControl(string action, string check = "")
         {
-            run.Apply(action, run.Elapsed, TimeSpan.Zero, check, self.Id);
             relay.Publish(new Dictionary<string, object>
             {
                 ["t"] = "control", ["from"] = self.Id, ["action"] = action,
@@ -368,10 +453,18 @@ namespace GroupRun
         {
             EndRunLogs();
             var root = RunLog.Root(sim);
-            ownLog = new RunLog(root, SafeFileName(settings.DisplayName) + ".jsonl");
-            if (!settings.IsAdmin)
+            try
+            {
+                ownLog = new RunLog(root, SafeFileName(settings.DisplayName) + ".jsonl");
+                if (!settings.IsAdmin)
+                    return;
+                groupLog = new RunLog(root, "events.jsonl");
+            }
+            catch (Exception e) when (e is System.IO.IOException || e is UnauthorizedAccessException)
+            {
+                ShowNote("Can't save the run"); // the board goes on; the next tick tries again
                 return;
-            groupLog = new RunLog(root, "events.jsonl");
+            }
             groupLog.Append(0, new Dictionary<string, object>
             {
                 ["t"] = "run", ["app"] = Updater.Current.ToString(), ["admin"] = self.Id,
@@ -420,7 +513,7 @@ namespace GroupRun
             {
                 if (lastPhase == Phase.Countdown && phase == Phase.Running)
                     voice.Say("Go!");
-                else if (lastPhase == Phase.Countdown)
+                else if (lastPhase == Phase.Countdown || run.SinceCancel < TimeSpan.FromSeconds(1))
                     voice.Say($"{Spoken(run.CancelledBy)} is not ready");
                 else if (phase == Phase.Paused)
                     voice.Say(run.PausedBy == self.Id ? "Paused" : $"Paused by {Spoken(run.PausedBy)}");
@@ -481,6 +574,8 @@ namespace GroupRun
                 declined = release.Version;
                 return;
             }
+            if (run.Phase == Phase.Countdown || run.Phase == Phase.Running || run.Phase == Phase.Paused)
+                return; // the run started while the question was up: restarting now would drop out of it
             try
             {
                 await Updater.InstallAsync(release);
@@ -495,6 +590,7 @@ namespace GroupRun
         void OpenSettings()
         {
             var before = (settings.DisplayName, settings.ClientLogPath, settings.GroupCode, settings.IsAdmin);
+            var splitsBefore = settings.SplitsFile;
             using (var form = new SetupForm(settings, settings.IsAdmin && hostedCode.Contains("/") ? hostedCode : ""))
             {
                 if (form.ShowDialog(this) != DialogResult.OK)
@@ -505,7 +601,10 @@ namespace GroupRun
             FitToBoard();
             if (sim)
                 return;
-            settings.Save();
+            if (!settings.Save())
+                Ui.Tell(this, Settings.CantSave);
+            if (settings.IsAdmin && settings.SplitsFile != splitsBefore && (run.Phase == Phase.Waiting || run.Phase == Phase.Finished))
+                PublishSplits();
             if ((settings.DisplayName, settings.ClientLogPath, settings.GroupCode, settings.IsAdmin) != before)
                 Ui.Tell(this, "Restart to apply.");
         }
@@ -531,10 +630,18 @@ namespace GroupRun
             base.OnMouseMove(e);
         }
 
+        DateTime lastClick = DateTime.MinValue;
+
         protected override void OnMouseUp(MouseEventArgs e)
         {
-            if (e.Button == MouseButtons.Left && ButtonAt(e.Location) is PanelButton button)
+            // the second click of a double-click would land on whatever button replaced the first (Ready → Not ready)
+            var now = DateTime.Now;
+            if (e.Button == MouseButtons.Left && ButtonAt(e.Location) is PanelButton button
+                && (now - lastClick).TotalMilliseconds > SystemInformation.DoubleClickTime)
+            {
+                lastClick = now;
                 Press(button.Action);
+            }
             base.OnMouseUp(e);
         }
 

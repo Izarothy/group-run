@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace GroupRun
 {
@@ -60,27 +61,32 @@ namespace GroupRun
         readonly Queue<DateTime> strikes = new Queue<DateTime>(); // readings that contradicted the calibration, recently
         static readonly TimeSpan StrikeWindow = TimeSpan.FromMinutes(2);
         int calibrationVersion; // a new calibration clears the strikes
+        DateTime barSeenAt = DateTime.Now; // the last reading, or the last time none was expected (tabbed out, loading, character select)
+        static readonly TimeSpan BlindAtMost = TimeSpan.FromSeconds(90); // longer than the passive tree stays open
         bool gameRunning;
         bool inZone;            // entered a zone since starting: past character select
         DateTime? diedAt;       // the death screen darkens the bar: no readings until we're back
         double? beforeDeath;    // the bar just before dying
         static readonly TimeSpan DeathScreenAtMost = TimeSpan.FromSeconds(60);
         string me;              // this runner's character, once known
-        (string Name, int Level, DateTime At)? pending; // a level-up waiting for the bar to say whose it is
+        readonly List<(string Name, int Level, DateTime At)> pending = new List<(string, int, DateTime)>(); // level-ups waiting for the bar to say whose
         static readonly TimeSpan PendingFor = TimeSpan.FromSeconds(10);
+        bool starting;          // the countdown to a new run (not a resume) is on
+        List<GameEvent> earlier; // the log before the app started, until the first update has used it
 
         public GameFeed(Settings settings)
         {
             this.settings = settings;
             me = settings.CharacterName.Trim().Length > 0 ? settings.CharacterName.Trim() : null;
             log = new GameLog(settings.ClientLogPath, me);
+            earlier = log.ReadEarlier(4 << 20);
         }
 
         public string Problem =>
             !log.Exists ? "log"
             : !settings.Xp.IsSet ? "xp-setup"
             : !gameRunning ? "game"
-            : RecentStrikes() >= StrikesForProblem ? "xp-off"
+            : RecentStrikes() >= StrikesForProblem || DateTime.Now - barSeenAt > BlindAtMost ? "xp-off"
             : "";
 
         public void Update(Runner self, Run run, DateTime now, List<Dictionary<string, object>> detail)
@@ -90,6 +96,29 @@ namespace GroupRun
                 calibrationVersion = settings.Xp.GetHashCode();
                 strikes.Clear();
                 lastBar = null;
+                barSeenAt = DateTime.Now;
+            }
+            var countdown = run.Phase == Phase.Countdown && !run.Resuming; // a replay after reconnecting is past it already
+            if (countdown && !starting)
+            {
+                // a new run, often on a fresh character: find it again, and count its level and deaths from scratch;
+                // the next level-up sets the real level (a 5 on an old character overrides the 1)
+                if (settings.CharacterName.Trim().Length == 0) me = null;
+                self.Level = 1;
+                self.Xp = 0;
+                self.Deaths = 0;
+                lastBar = null;
+                expectEmptyBar = false;
+            }
+            starting = countdown;
+            if (earlier != null)
+            {
+                // started mid-session (a restart, a crash): where the character already is, until the log says more
+                if (earlier.LastOrDefault(e => e.Kind == GameEventKind.Zone) is GameEvent zone)
+                    self.Zone = zone.Text;
+                if (me != null && earlier.LastOrDefault(e => e.Kind == GameEventKind.LevelUp && string.Equals(e.Text, me, StringComparison.OrdinalIgnoreCase)) is GameEvent level)
+                    self.Level = level.Level;
+                earlier = null;
             }
 
             foreach (var e in log.ReadNew())
@@ -106,15 +135,16 @@ namespace GroupRun
                         if (me == null)
                         {
                             if (!settings.Xp.IsSet) me = e.Text; // nothing to check against: the first one is ours
-                            else { pending = (e.Text, e.Level, now); continue; }
+                            else { pending.Add((e.Text, e.Level, now)); continue; }
                         }
-                        if (e.Text != me) continue; // a party member's
+                        if (!string.Equals(e.Text, me, StringComparison.OrdinalIgnoreCase)) continue; // a party member's
                         self.SetLevel(e.Level, now);
+                        self.Xp = 0; // the bar starts over: not the old level's fill on the new level until the next reading
                         expectEmptyBar = true;
                         record["lvl"] = e.Level;
                         break;
                     case GameEventKind.Death:
-                        if (e.Text != me) continue; // someone else's, or ours before we know who we are
+                        if (!string.Equals(e.Text, me, StringComparison.OrdinalIgnoreCase)) continue; // someone else's, or ours before we know who we are
                         self.Deaths++;
                         diedAt = now;
                         beforeDeath = lastBar;
@@ -165,13 +195,14 @@ namespace GroupRun
             var why = !settings.Xp.IsSet ? "uncalibrated" : !gameRunning ? "no game" : !front ? "background" : loading ? "loading" : "";
             if (why.Length > 0)
             {
+                barSeenAt = DateTime.Now;
                 record["bar"] = null;
                 record["why"] = why;
                 return record;
             }
 
             var learned = settings.Xp.Learned;
-            var read = XpBar.Read(settings.Xp, mayLearn: inZone);
+            var read = XpBar.Read(settings.Xp, mayLearn: inZone && diedAt == null); // the death screen's darkened bar isn't the bar
             if (read?.Peak is int peak) record["peak"] = peak;
             if (!learned && settings.Xp.Learned)
             {
@@ -185,8 +216,10 @@ namespace GroupRun
                 record["why"] = "not visible";
                 if (read != null) record["err"] = Math.Round(read.Error, 1);
                 lastBar = null;
+                if (!inZone) barSeenAt = DateTime.Now;
                 return record;
             }
+            barSeenAt = DateTime.Now;
             var bar = read.Fill;
             if (diedAt is DateTime died)
             {
@@ -217,14 +250,22 @@ namespace GroupRun
             return record;
         }
 
-        /// <summary>A level-up whose name isn't known yet is ours if our bar is nearly empty right after it.</summary>
+        /// <summary>
+        /// A level-up whose name isn't known yet is ours if our bar went from well along to nearly empty right after
+        /// it, and no other name levelled in that time: a party member levelling while our bar happens to be low, or
+        /// at the same moment as us, names nobody.
+        /// </summary>
         void ConfirmPending(Runner self, double bar, Dictionary<string, object> record)
         {
-            if (pending is not (string name, int level, DateTime at))
+            if (pending.Count == 0)
                 return;
-            pending = null;
-            if (DateTime.Now - at > PendingFor || bar > 0.2)
-                return; // too late to tell, or our bar didn't reset: it was someone else's
+            var recent = pending.Where(p => DateTime.Now - p.At <= PendingFor).ToList();
+            pending.Clear();
+            // no reading before (the colours not learned yet, early on a fresh character): a low bar now is all there is
+            var reset = bar <= 0.2 && (!(lastBar is double before) || before - bar > 0.5);
+            if (!reset || recent.Select(p => p.Name).Distinct().Count() != 1)
+                return; // too late to tell, our bar didn't reset, or two names levelled: wait for the next level-up
+            var (name, level, _) = recent[recent.Count - 1];
             me = name;
             self.SetLevel(level, DateTime.Now);
             record["lvl"] = level;

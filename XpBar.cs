@@ -22,7 +22,7 @@ namespace GroupRun
         /// <summary>Above this mean colour distance per column, what's on screen isn't the calibrated bar.</summary>
         const double MaxFitError = 38;
         /// <summary>A split counts as the bar's fill edge only when the two sides differ at least this much.</summary>
-        const double MinContrast = 45;
+        const double MinContrast = 28; // a dim fill on some setups is only ~47 from the empty colour; noise at 0% stays under ~10
 
         static readonly string[] ProcessNames =
         {
@@ -60,8 +60,15 @@ namespace GroupRun
             var origin = GameOrigin();
             if (origin == null)
                 return null;
-            using (var strip = Capture(new Rectangle(origin.Value.X + region.X, origin.Value.Y + region.Y, region.Width, region.Height)))
-                return ColumnColors(strip);
+            try
+            {
+                using (var strip = Capture(new Rectangle(origin.Value.X + region.X, origin.Value.Y + region.Y, region.Width, region.Height)))
+                    return ColumnColors(strip);
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                return null; // the screen can't be copied (locked, a UAC prompt): no reading this time
+            }
         }
 
         /// <summary>
@@ -82,7 +89,7 @@ namespace GroupRun
             if (!mayLearn)
                 return unknown; // outside a zone a strip that happens to split isn't evidence of anything
             var (split, left, right, atLimit) = Changepoint(columns);
-            if (atLimit || Distance(left, right) < MinContrast)
+            if (atLimit || Distance(left, right) < MinContrast || Brightest(left) <= Brightest(right))
             {
                 var reading = EmptyBar(columns) ?? unknown; // no clear fill edge yet
                 reading.Peak = columns.Max(c => Math.Max(c.R, Math.Max(c.G, c.B)));
@@ -96,6 +103,14 @@ namespace GroupRun
         /// <summary>The brightest a column of a still-empty bar gets; PoE's empty bar is near black, its fill bright.</summary>
         const int EmptyAtMost = 70;
 
+        /// <summary>A bar with a little fill already spreads ~5-9 from its mean; a truly empty one ~4. Anything in between is
+        /// unknown until the colours are learned, rather than a wrong 0%.</summary>
+        const double FlatAtMost = 5;
+
+        /// <summary>A colour's brightest channel. The fill is the brighter side, so a dark empty bar that ends in a
+        /// bright piece of frame isn't mistaken for a nearly full one.</summary>
+        static int Brightest(Color c) => Math.Max(c.R, Math.Max(c.G, c.B));
+
         /// <summary>
         /// A fresh character's bar, at 0% in a zone: one even, dark colour with no edge to learn from. Read as empty
         /// until the first kills give it an edge. Never learned from, since it shows only one of the two colours.
@@ -104,7 +119,7 @@ namespace GroupRun
         {
             var mean = Mean(columns, 0, columns.Length);
             var spread = columns.Average(c => Distance(c, mean));
-            if (spread > MaxFitError || columns.Any(c => Math.Max(c.R, Math.Max(c.G, c.B)) > EmptyAtMost))
+            if (spread > FlatAtMost || columns.Any(c => Math.Max(c.R, Math.Max(c.G, c.B)) > EmptyAtMost))
                 return null;
             return new Reading { Fill = 0, Error = spread };
         }

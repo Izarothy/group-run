@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -28,12 +29,26 @@ namespace GroupRun
                 var check = Updater.LatestAsync();
                 if (!check.Wait(TimeSpan.FromSeconds(4)) || check.Result == null || check.Result.Version <= Updater.Current)
                     return false;
-                Updater.InstallAsync(check.Result).GetAwaiter().GetResult();
+                using (var slow = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+                    Updater.InstallAsync(check.Result, slow.Token).GetAwaiter().GetResult();
                 return true;
             }
             catch (Exception)
             {
                 return false;
+            }
+        }
+
+        static void LogError(Exception e)
+        {
+            try
+            {
+                System.IO.File.AppendAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "errors.log"),
+                    $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} v{Updater.Current} {e}{Environment.NewLine}{Environment.NewLine}");
+            }
+            catch (Exception)
+            {
+                // nowhere to write: carry on regardless
             }
         }
 
@@ -48,6 +63,9 @@ namespace GroupRun
                 return;
             }
 
+            // a run is live while this is open: an unexpected error is written down, never a dialog in the way
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += (s, e) => LogError(e.Exception);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             if (args.Length == 1 && args[0] == "--demo")
@@ -83,6 +101,9 @@ namespace GroupRun
                 return;
             }
 
+            var single = new Mutex(false, "Local\\GroupRun " + AppContext.BaseDirectory.ToLowerInvariant().Replace('\\', '/'));
+            if (!FirstInstance(single))
+                return;
             if (UpdatedOnLaunch())
                 return; // the new version is starting in our place
 
@@ -92,9 +113,27 @@ namespace GroupRun
                 using (var setup = new SetupForm(settings))
                     if (setup.ShowDialog() != DialogResult.OK || !settings.IsComplete)
                         return;
-                settings.Save();
+                if (!settings.Save())
+                    Ui.Tell(null, Settings.CantSave);
             }
             Application.Run(settings.IsAdmin ? Host(settings) : Join(settings));
+            GC.KeepAlive(single);
+        }
+
+        /// <summary>
+        /// One app per folder: a second one on the same settings would host a second tunnel on the group's topic
+        /// and split the runners between two boards. An update's restart waits here for the old one to close.
+        /// </summary>
+        static bool FirstInstance(Mutex single)
+        {
+            try
+            {
+                return single.WaitOne(TimeSpan.FromSeconds(5));
+            }
+            catch (AbandonedMutexException)
+            {
+                return true; // the last one exited without letting go: a crash, or the update that started us
+            }
         }
 
         /// <summary>The admin's app: runs the hub on this PC, opens the port, shows the join code.</summary>
@@ -104,7 +143,8 @@ namespace GroupRun
             {
                 if (settings.HostSecret.Length == 0) settings.HostSecret = JoinCode.NewSecret();
                 if (settings.HostTopic.Length == 0) settings.HostTopic = Pointer.NewTopic();
-                settings.Save();
+                if (!settings.Save())
+                    Ui.Tell(null, Settings.CantSave + " The join code changes every launch until then.");
             }
             var stable = new JoinCode { Host = settings.HostTopic, Secret = settings.HostSecret }.ToString();
             Hub hub;
@@ -112,7 +152,7 @@ namespace GroupRun
             {
                 hub = new Hub(settings.HostPort, settings.HostSecret);
             }
-            catch (SocketException)
+            catch (Exception e) when (e is SocketException || e is ArgumentOutOfRangeException)
             {
                 hub = new Hub(0, settings.HostSecret); // the usual port is taken: any free one works behind the tunnel
             }
@@ -123,26 +163,30 @@ namespace GroupRun
 
             async Task Open()
             {
-                if (opening || tunnel != null) return;
+                if (opening) return;
                 opening = true;
                 try
                 {
-                    var cloudflared = Tunnel.Find();
-                    if (cloudflared == null)
+                    if (tunnel == null) // up already when only posting the address failed
                     {
-                        if (!Ui.Tell(form, "Hosting goes through a Cloudflare tunnel, so runners never see your IP. Get cloudflared from Cloudflare's GitHub (about 60 MB)?", "Download", "Later"))
+                        var cloudflared = Tunnel.Find();
+                        if (cloudflared == null)
                         {
-                            form.ShowJoinCode("", "cloudflared missing");
-                            return;
+                            if (!Ui.Tell(form, "Hosting goes through a Cloudflare tunnel, so runners never see your IP. Get cloudflared from Cloudflare's GitHub (about 60 MB)?", "Download", "Later"))
+                            {
+                                form.ShowJoinCode("", "cloudflared missing");
+                                return;
+                            }
+                            form.ShowJoinCode("downloading cloudflared…", "");
+                            cloudflared = await Tunnel.DownloadAsync();
                         }
-                        form.ShowJoinCode("downloading cloudflared…", "");
-                        cloudflared = await Tunnel.DownloadAsync();
+                        form.ShowJoinCode("starting tunnel…", "");
+                        var (started, host) = await Tunnel.StartAsync(cloudflared, hub.Port);
+                        started.Died += () => form.BeginInvoke(new Action(() => Closed(started)));
+                        tunnel = started;
+                        current = host;
                     }
-                    form.ShowJoinCode("starting tunnel…", "");
-                    var (started, host) = await Tunnel.StartAsync(cloudflared, hub.Port);
-                    tunnel = started;
-                    current = host;
-                    await Pointer.PublishAsync(settings.HostTopic, settings.HostSecret, host);
+                    await Pointer.PublishAsync(settings.HostTopic, settings.HostSecret, current);
                     form.ShowJoinCode(stable, "");
                 }
                 catch (Exception e)
@@ -153,6 +197,17 @@ namespace GroupRun
                 {
                     opening = false;
                 }
+            }
+
+            // cloudflared quit mid-session: runners reconnect to wherever the topic points, so open a new tunnel and post it
+            void Closed(Tunnel dead)
+            {
+                if (tunnel != dead) return;
+                tunnel.Dispose();
+                tunnel = null;
+                current = null;
+                form.ShowJoinCode("", "Tunnel closed");
+                _ = Open();
             }
 
             form.HostRetry = () => _ = Open();

@@ -22,9 +22,12 @@ namespace GroupRun
             var transcript = new List<string>();
             var hub = new Hub(0, "selftest");
             var forms = new List<MainForm>();
+            var splits = Path.Combine(output, "splits.lss"); // zones the sim reaches in its first minute
+            File.WriteAllText(splits, "<Run><Segments>" + string.Concat(new[] { "Coast", "Mud Flats", "Submerged Passage", "Lower Prison", "Kitava kill" }
+                .Select(n => $"<Segment><Name>{n}</Name></Segment>")) + "</Segments></Run>");
             for (var i = 0; i < 3; i++)
             {
-                var settings = new Settings { DisplayName = "r" + (i + 1), RunnerId = "test" + i, IsAdmin = i == 0, Voice = false, OnTop = "never" };
+                var settings = new Settings { DisplayName = "r" + (i + 1), RunnerId = "test" + i, IsAdmin = i == 0, Voice = false, OnTop = "never", SplitsFile = i == 0 ? splits : "" };
                 IRelay relay = i == 0
                     ? (IRelay)new HubRelay(hub)
                     : new WsRelay(new JoinCode { Host = "127.0.0.1:" + hub.Port, Secret = "selftest" });

@@ -45,6 +45,9 @@ namespace GroupRun
         const int RowHeight = 28;
         const int FooterHeight = 34;
         const int BottomPad = 10;
+        const int SplitsTop = 8;          // gap between the runners and the splits
+        const int SplitRowHeight = 24;
+        const int SplitsShown = 6;        // a longer list scrolls: the last done split, what's next, the final split
         const int StripHeight = 52;
         const int NoticeTop = 30;        // title baseline area above the hint
         const int HintLine = 17;
@@ -79,6 +82,8 @@ namespace GroupRun
         static readonly Font CodeFont = Fonts.Mono(12);
         static readonly Font ButtonFont = Fonts.SansMedium(13);
         static readonly Font HintFont = Fonts.Sans(12);
+        static readonly Font SplitFont = Fonts.Sans(13);
+        static readonly Font SplitTimeFont = Fonts.Mono(13);
         static readonly Graphics Measurer = Graphics.FromImage(new Bitmap(1, 1));
 
         static bool ShowsFooter(Run run, Chrome chrome) => run.Phase == Phase.Waiting && run.ReadyCheck.Length == 0 && chrome.GroupCode.Length > 0;
@@ -90,7 +95,8 @@ namespace GroupRun
         static int NoticeHeight(Notice notice) => NoticeTop + HintLines(notice) * HintLine + 6;
 
         public static int HeightFor(Run run, Chrome chrome) =>
-            HeaderHeight + Math.Max(1, run.Runners.Count) * RowHeight + (ShowsFooter(run, chrome) ? FooterHeight : 0) + BottomPad
+            HeaderHeight + Math.Max(1, run.Runners.Count) * RowHeight + SplitsHeight(run.Splits)
+            + (ShowsFooter(run, chrome) ? FooterHeight : 0) + BottomPad
             + (chrome.ShowControls ? StripHeight + (chrome.Notice != null ? NoticeHeight(chrome.Notice) : 0) : 0);
 
         /// <summary>Draw the board; returns the buttons it drew.</summary>
@@ -111,6 +117,15 @@ namespace GroupRun
             {
                 Rule(g, top);
                 top += RowHeight;
+            }
+            if (run.Splits.Any)
+            {
+                top += SplitsTop;
+                foreach (var index in ShownSplits(run.Splits))
+                {
+                    DrawSplit(g, run.Splits, index, top);
+                    top += SplitRowHeight;
+                }
             }
             if (ShowsFooter(run, chrome))
             {
@@ -204,6 +219,52 @@ namespace GroupRun
             else
                 (tail, tailColor) = ("", Secondary);
             RightAligned(g, tail, GapFont, tailColor, GapRight, baseline - 1);
+        }
+
+        static int SplitsHeight(SplitList splits) =>
+            splits.Any ? SplitsTop + Math.Min(SplitsShown, splits.Names.Length) * SplitRowHeight : 0;
+
+        /// <summary>All splits when they fit; otherwise a window from the last one done, plus the final split.</summary>
+        static IEnumerable<int> ShownSplits(SplitList splits)
+        {
+            var count = splits.Names.Length;
+            if (count <= SplitsShown)
+                return Enumerable.Range(0, count);
+            var next = Array.FindIndex(splits.Times, t => t == null);
+            var first = Math.Max(0, Math.Min((next < 0 ? count : next) - 1, count - SplitsShown));
+            return Enumerable.Range(first, SplitsShown - 1).Append(count - 1);
+        }
+
+        static void DrawSplit(Graphics g, SplitList splits, int index, int top)
+        {
+            var baseline = top + 17;
+            var time = splits.Times[index];
+            var pb = splits.Pb[index];
+            var next = time == null && Array.FindIndex(splits.Times, t => t == null) == index;
+            DrawClipped(g, splits.Names[index], SplitFont, time != null || next ? Text : Secondary, Pad, baseline, Width - 2 * Pad - 120, rightAlign: false);
+            if (time is TimeSpan done)
+            {
+                RightAligned(g, FormatTime(done), SplitTimeFont, Text, GapRight, baseline);
+                if (pb is TimeSpan compare)
+                {
+                    var gold = splits.Gold[index] is TimeSpan best && done < best;
+                    var delta = done - compare;
+                    RightAligned(g, FormatDelta(delta), SplitTimeFont, gold ? Amber : Math.Abs(delta.TotalSeconds) < 0.05 ? Secondary : delta < TimeSpan.Zero ? Green : Red, GapRight - 62, baseline);
+                }
+            }
+            else if (pb is TimeSpan compare)
+                RightAligned(g, FormatTime(compare), SplitTimeFont, Faint, GapRight, baseline);
+        }
+
+        /// <summary>"−12.4" under a minute, "+1:05" above, like LiveSplit.</summary>
+        static string FormatDelta(TimeSpan delta)
+        {
+            var tenths = Math.Round(delta.TotalSeconds * 10); // round first, so 59.97 reads +1:00, not +60.0
+            if (tenths == 0)
+                return "±0.0";
+            var sign = tenths < 0 ? "−" : "+";
+            var seconds = Math.Abs(tenths) / 10;
+            return sign + (seconds < 60 ? seconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) : $"{(int)(seconds / 60)}:{(int)seconds % 60:00}");
         }
 
         static void DrawNotice(Graphics g, Notice notice, int top)

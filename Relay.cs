@@ -123,26 +123,25 @@ namespace GroupRun
                 ForRunners = (body["t"] as string) != "detail",
                 At = clock.ElapsedMilliseconds,
             };
-            List<Peer> targets;
-            lock (history)
+            lock (history) // one order for everyone: concurrent senders must not interleave differently per peer
             {
                 history.Add(entry);
-                lock (peers)
-                    targets = entry.ForRunners ? peers.ToList() : new List<Peer>();
+                Local.Enqueue(new Message { Body = body, Age = TimeSpan.Zero });
+                if (entry.ForRunners)
+                    lock (peers)
+                        foreach (var peer in peers)
+                            peer.Send("0\t" + json);
             }
-            Local.Enqueue(new Message { Body = body, Age = TimeSpan.Zero });
-            foreach (var peer in targets)
-                peer.Send("0\t" + json);
         }
 
         async Task Accept()
         {
             while (!stop.IsCancellationRequested)
             {
-                IChannel channel;
+                TcpClient client;
                 try
                 {
-                    channel = await server.AcceptAsync();
+                    client = await server.AcceptAsync();
                 }
                 catch (Exception) when (stop.IsCancellationRequested)
                 {
@@ -152,7 +151,12 @@ namespace GroupRun
                 {
                     continue;
                 }
-                _ = Task.Run(() => Serve(channel));
+                _ = Task.Run(async () =>
+                {
+                    var channel = await WsServer.HandshakeAsync(client);
+                    if (channel != null)
+                        await Serve(channel);
+                });
             }
         }
 
@@ -183,9 +187,9 @@ namespace GroupRun
                     {
                         body = Json.Deserialize<Dictionary<string, object>>(line);
                     }
-                    catch (ArgumentException)
+                    catch (Exception e) when (e is ArgumentException || e is InvalidOperationException)
                     {
-                        continue; // not JSON: skip it rather than drop the runner
+                        continue; // not JSON, or not an object: skip it rather than drop the runner
                     }
                     if (body != null && body.ContainsKey("t"))
                         Pass(line, body);
@@ -273,6 +277,7 @@ namespace GroupRun
         volatile bool everConnected, denied, waiting;
         long retryAt; // ticks; DateTime isn't volatile-safe
         int connections;
+        List<string> found = new List<string>(); // what the pointer last said
 
         public ConcurrentQueue<Message> Inbox { get; } = new ConcurrentQueue<Message>();
         public string LastError => lastError;
@@ -313,6 +318,22 @@ namespace GroupRun
             }
         }
 
+        /// <summary>
+        /// Where the pointer says the admin is; when ntfy can't be reached (down, rate-limited), what it said last
+        /// time, so a runner who drops mid-run gets back in while the admin's tunnel is still up.
+        /// </summary>
+        async Task<List<string>> Resolve()
+        {
+            try
+            {
+                return found = await Pointer.ResolveAsync(code.Host, code.Secret);
+            }
+            catch (Exception) when (found.Count > 0 && !stop.IsCancellationRequested)
+            {
+                return found;
+            }
+        }
+
         async Task Run()
         {
             var delay = TimeSpan.FromSeconds(1);
@@ -320,7 +341,7 @@ namespace GroupRun
             {
                 try
                 {
-                    var hosts = code.IsPointer ? await Pointer.ResolveAsync(code.Host, code.Secret) : new List<string> { code.Host };
+                    var hosts = code.IsPointer ? await Resolve() : new List<string> { code.Host };
                     if (hosts.Count == 0)
                         throw new IOException("the admin isn't hosting");
                     var channel = await ConnectAny(hosts);

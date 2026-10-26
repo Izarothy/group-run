@@ -25,11 +25,15 @@ namespace GroupRun
     sealed class Tunnel : IDisposable
     {
         const string Asset = "cloudflared-windows-amd64.exe";
-        static readonly Regex Address = new Regex(@"https://([a-z0-9-]+\.trycloudflare\.com)", RegexOptions.Compiled);
+        static readonly Regex Address = new Regex(@"https://(?!api\.)([a-z0-9-]+\.trycloudflare\.com)", RegexOptions.Compiled); // not the API in its error lines
 
         readonly Process process;
+        volatile bool disposed;
 
         Tunnel(Process process) => this.process = process;
+
+        /// <summary>cloudflared quit on its own after handing out the address: that address is dead now.</summary>
+        public event Action Died;
 
         public static string LocalPath => Path.Combine(AppContext.BaseDirectory, "cloudflared.exe");
 
@@ -63,6 +67,7 @@ namespace GroupRun
                     RedirectStandardOutput = true,
                 },
             };
+            var tunnel = new Tunnel(process);
             var found = new TaskCompletionSource<string>();
             var log = new List<string>();
             DataReceivedEventHandler watch = (s, e) =>
@@ -74,20 +79,27 @@ namespace GroupRun
             };
             process.ErrorDataReceived += watch; // cloudflared logs to stderr
             process.OutputDataReceived += watch;
+            process.ErrorDataReceived += (s, e) =>
+            {
+                if (e.Data != null) return;
+                // stderr closed, so cloudflared has exited: before the address, that's a failure to report now
+                if (!found.TrySetResult(null) && !tunnel.disposed)
+                    tunnel.Died?.Invoke();
+            };
             process.Start();
             Job.Attach(process);
             process.BeginErrorReadLine();
             process.BeginOutputReadLine();
 
             var winner = await Task.WhenAny(found.Task, Task.Delay(TimeSpan.FromSeconds(40)));
-            if (winner != found.Task)
+            if (winner != found.Task || found.Task.Result == null)
             {
-                try { process.Kill(); } catch (InvalidOperationException) { }
+                try { if (!process.HasExited) process.Kill(); } catch (InvalidOperationException) { }
                 string last;
                 lock (log) last = log.LastOrDefault(l => l.Contains("ERR")) ?? "no address from Cloudflare";
                 throw new IOException(last);
             }
-            return (new Tunnel(process), found.Task.Result);
+            return (tunnel, found.Task.Result);
         }
 
         /// <summary>Download cloudflared from Cloudflare's latest GitHub release next to the app, checked against GitHub's checksum.</summary>
@@ -115,6 +127,7 @@ namespace GroupRun
 
         public void Dispose()
         {
+            disposed = true;
             try { if (!process.HasExited) process.Kill(); } catch (InvalidOperationException) { }
             process.Dispose();
         }

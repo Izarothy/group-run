@@ -212,7 +212,9 @@ namespace GroupRun
 </main>
 <script>
 const data = __DATA__;
-const runners = data.runners;
+// names and zones come from other people's apps: never markup
+const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+const runners = data.runners.map(r => ({ ...r, name: esc(r.name) }));
 
 const time = s => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`; };
@@ -296,7 +298,7 @@ document.getElementById("note").textContent =
     const cells = times.map(v => v === undefined ? `<td class="missing">—</td>`
       : v === best ? `<td><span class="best">${time(v)}</span></td>`
       : `<td>${time(v)}<span class="gap">+${time(v - best)}</span></td>`).join("");
-    t.append(el("tr", `<td class="zone">${zone}</td>${cells}`));
+    t.append(el("tr", `<td class="zone">${esc(zone)}</td>${cells}`));
   });
 }
 </script>

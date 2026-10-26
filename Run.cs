@@ -38,6 +38,7 @@ namespace GroupRun
     {
         public static readonly TimeSpan StartCountdown = TimeSpan.FromSeconds(5);
         public static readonly TimeSpan ResumeCountdown = TimeSpan.FromSeconds(3);
+        static readonly TimeSpan CancelGrace = TimeSpan.FromSeconds(2); // a "not ready" sent just before zero is still on its way
 
         static readonly Stopwatch Uptime = Stopwatch.StartNew();
 
@@ -60,7 +61,6 @@ namespace GroupRun
                 {
                     phase = Phase.Running;
                     runningSince = countdownEnds;
-                    ReadyCheck = "";
                     PausedBy = "";
                 }
                 return phase;
@@ -73,6 +73,7 @@ namespace GroupRun
         public TimeSpan? CancelledAt { get; private set; }
         public bool Resuming { get; private set; }               // the countdown is back from a pause, not the start
         public readonly Dictionary<string, Runner> Runners = new Dictionary<string, Runner>();
+        public readonly SplitList Splits = new SplitList();
 
         public TimeSpan Elapsed => banked + (Phase == Phase.Running ? clock() - runningSince : TimeSpan.Zero);
         public TimeSpan CountdownLeft => Phase == Phase.Countdown ? countdownEnds - clock() : TimeSpan.Zero;
@@ -85,22 +86,27 @@ namespace GroupRun
 
         /// <summary>Apply an action from anyone in the group. <paramref name="elapsed"/> is the run time when it
         /// was sent and <paramref name="age"/> how long ago that was, so every copy of the timer agrees;
-        /// <paramref name="by"/> is the runner who sent it.</summary>
+        /// <paramref name="by"/> is the runner who sent it. Every copy applies the same actions in the hub's order,
+        /// so an action that no longer fits the phase (a second pause, a resume after Finish) is dropped everywhere.</summary>
         public void Apply(string action, TimeSpan elapsed, TimeSpan age, string check = "", string by = "")
         {
+            var current = Phase;
             switch (action)
             {
                 case "readycheck":
                     ReadyCheck = check;
                     break;
                 case "countdown":
-                    Resuming = Phase == Phase.Paused;
+                    if (current != Phase.Waiting && current != Phase.Paused)
+                        break;
+                    Resuming = current == Phase.Paused;
                     banked = elapsed;
                     countdownEnds = clock() + (Resuming ? ResumeCountdown : StartCountdown) - age;
                     phase = Phase.Countdown;
                     break;
                 case "cancel":
-                    if (Phase != Phase.Countdown)
+                    var justStarted = current == Phase.Running && runningSince == countdownEnds && clock() - age - countdownEnds < CancelGrace;
+                    if (current != Phase.Countdown && !justStarted)
                         break;
                     phase = Resuming ? Phase.Paused : Phase.Waiting;
                     CancelledBy = by;
@@ -115,15 +121,20 @@ namespace GroupRun
                     PausedBy = "";
                     break;
                 case "pause":
+                    if (current != Phase.Running)
+                        break;
                     banked = elapsed;
                     phase = Phase.Paused;
                     PausedBy = by;
                     break;
                 case "finish":
+                    if (current == Phase.Waiting || current == Phase.Finished)
+                        break;
                     banked = elapsed;
                     phase = Phase.Finished;
                     break;
                 case "reset":
+                    Splits.Clear();
                     banked = TimeSpan.Zero;
                     phase = Phase.Waiting;
                     ReadyCheck = "";

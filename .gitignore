@@ -5,3 +5,6 @@ runs/
 runs.csv
 cloudflared.exe
 *.mp4
+errors.log
+hub.jsonl
+splits.json

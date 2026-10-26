@@ -22,6 +22,10 @@ namespace GroupRun
         readonly UiSegment buttons = new UiSegment("Show", "Hide");
         readonly UiButton copy = new UiButton { Text = "Copy", Margin = new Padding(8, 1, 0, 0) };
         readonly Label xpState = new Label { AutoSize = true, Font = Ui.BodyMedium, Margin = new Padding(0, 9, 12, 0) };
+        readonly Label splitsState = new Label { AutoSize = true, Font = Ui.BodyMedium, Margin = new Padding(0, 9, 12, 0), MaximumSize = new Size(FieldWidth - 160, 0) };
+        readonly Control splitsCaption = Ui.Caption("Splits");
+        FlowLayoutPanel splitsRow;
+        string splitsFile;
         XpRegion xp;
 
         /// <param name="hostedCode">The admin's current join code, to copy; "" when not hosting.</param>
@@ -56,6 +60,15 @@ namespace GroupRun
             layout.Controls.Add(Ui.Caption("Join code"));
             copy.Click += (s, e) => { if (hostedCode.Length > 0) Clipboard.SetText(hostedCode); copy.Text = "Copied"; };
             layout.Controls.Add(Row(code, copy));
+
+            splitsFile = settings.SplitsFile;
+            var pickSplits = new UiButton { Text = "Browse" };
+            pickSplits.Click += PickSplits;
+            var clearSplits = new UiButton { Text = "None", Margin = new Padding(8, 1, 0, 0) };
+            clearSplits.Click += (s, e) => { splitsFile = ""; ShowSplits(); };
+            layout.Controls.Add(splitsCaption);
+            layout.Controls.Add(splitsRow = Row(splitsState, pickSplits, clearSplits));
+            ShowSplits();
             role.SelectedChanged += (s, e) => ShowRole();
             role.Selected = settings.IsAdmin ? 1 : 0;
             ShowRole();
@@ -85,6 +98,7 @@ namespace GroupRun
                 settings.ClientLogPath = log.Text.Trim();
                 if (role.Selected == 0) settings.GroupCode = code.Text.Trim();
                 settings.IsAdmin = role.Selected == 1;
+                settings.SplitsFile = splitsFile;
                 settings.Xp = xp;
                 settings.OnTop = OnTopValues[onTop.Selected];
                 settings.Voice = voice.Selected == 0;
@@ -111,6 +125,20 @@ namespace GroupRun
             code.Box.ReadOnly = admin;
             code.Text = admin ? (hostedCode.Length > 0 ? hostedCode : "after restart") : settings.GroupCode;
             copy.Visible = admin && hostedCode.Length > 0;
+            splitsCaption.Visible = splitsRow != null && admin;
+            if (splitsRow != null) splitsRow.Visible = admin;
+        }
+
+        void ShowSplits() => splitsState.Text = splitsFile.Length > 0 ? System.IO.Path.GetFileNameWithoutExtension(splitsFile) : "None";
+
+        void PickSplits(object sender, EventArgs e)
+        {
+            using (var dialog = new OpenFileDialog { Filter = "LiveSplit splits|*.lss" })
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    splitsFile = dialog.FileName;
+                    ShowSplits();
+                }
         }
 
         void ShowXp()

@@ -23,6 +23,7 @@ namespace GroupRun
             return path;
         }
 
-        static string Csv(string value) => value.Any(c => c == ',' || c == '"') ? "\"" + value.Replace("\"", "\"\"") + "\"" : value;
+        static string Csv(string value) =>
+            value.Any(c => c == ',' || c == '"' || c == '\r' || c == '\n') ? "\"" + value.Replace("\"", "\"\"") + "\"" : value;
     }
 }

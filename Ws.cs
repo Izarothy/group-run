@@ -36,34 +36,44 @@ namespace GroupRun
 
         public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-        /// <summary>The next client that completed the WebSocket handshake.</summary>
-        public async Task<IChannel> AcceptAsync()
+        /// <summary>The next TCP connection; <see cref="HandshakeAsync"/> makes it a channel.</summary>
+        public Task<TcpClient> AcceptAsync() => listener.AcceptTcpClientAsync();
+
+        /// <summary>
+        /// The WebSocket handshake on one connection: its channel, or null if it isn't one or doesn't finish in time.
+        /// Every connection does its own, so one that never sends its request (half-open, or trickling it in) holds
+        /// up nobody else's.
+        /// </summary>
+        public static async Task<IChannel> HandshakeAsync(TcpClient client)
         {
-            while (true)
+            try
             {
-                var client = await listener.AcceptTcpClientAsync();
-                try
-                {
-                    var stream = client.GetStream();
-                    var key = await ReadHandshake(stream);
-                    if (key == null)
-                    {
-                        var refuse = Encoding.ASCII.GetBytes("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                        await stream.WriteAsync(refuse, 0, refuse.Length);
-                        client.Close();
-                        continue;
-                    }
-                    string accept;
-                    using (var sha = SHA1.Create())
-                        accept = Convert.ToBase64String(sha.ComputeHash(Encoding.ASCII.GetBytes(key + Magic)));
-                    var reply = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");
-                    await stream.WriteAsync(reply, 0, reply.Length);
-                    return new ServerChannel(client);
-                }
-                catch (IOException)
+                var stream = client.GetStream();
+                var reading = ReadHandshake(stream);
+                if (await Task.WhenAny(reading, Task.Delay(TimeSpan.FromSeconds(10))) != reading)
                 {
                     client.Close();
+                    return null;
                 }
+                var key = await reading;
+                if (key == null)
+                {
+                    var refuse = Encoding.ASCII.GetBytes("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    await stream.WriteAsync(refuse, 0, refuse.Length);
+                    client.Close();
+                    return null;
+                }
+                string accept;
+                using (var sha = SHA1.Create())
+                    accept = Convert.ToBase64String(sha.ComputeHash(Encoding.ASCII.GetBytes(key + Magic)));
+                var reply = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");
+                await stream.WriteAsync(reply, 0, reply.Length);
+                return new ServerChannel(client);
+            }
+            catch (Exception e) when (e is IOException || e is ObjectDisposedException)
+            {
+                client.Close();
+                return null;
             }
         }
 
@@ -131,7 +141,7 @@ namespace GroupRun
                         length = 0;
                         for (var i = 0; i < 8; i++) length = (length << 8) | ext[i];
                     }
-                    if (length > 1 << 20) return null; // nothing in this protocol is that big
+                    if (length > 1 << 20 || message.Length + length > 1 << 20) return null; // nothing in this protocol is that big, in one frame or in pieces
                     var mask = masked ? await ReadExactly(4) : null;
                     if (masked && mask == null) return null;
                     var payload = length == 0 ? new byte[0] : await ReadExactly((int)length);
