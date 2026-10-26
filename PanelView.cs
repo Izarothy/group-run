@@ -39,7 +39,7 @@ namespace GroupRun
     /// </summary>
     public static class PanelView
     {
-        public const int Width = 300;
+        public const int Width = 340;
         const int Pad = 14;
         const int HeaderHeight = 44;
         const int RowHeight = 28;
@@ -83,6 +83,7 @@ namespace GroupRun
         static readonly Font ButtonFont = Fonts.SansMedium(13);
         static readonly Font HintFont = Fonts.Sans(12);
         static readonly Font SplitFont = Fonts.Sans(13);
+        static readonly Font ZoneFont = Fonts.Sans(12);
         static readonly Font SplitTimeFont = Fonts.Mono(13);
         static readonly Graphics Measurer = Graphics.FromImage(new Bitmap(1, 1));
 
@@ -199,6 +200,10 @@ namespace GroupRun
             var main = offline ? Faint : paused ? Secondary : Text;
 
             DrawText(g, runner.Name, NameFont, main, NameX, baseline);
+            // where they are, between the name and the level; "The Lower Prison" reads as "Lower Prison"
+            var zoneX = NameX + Measure(g, runner.Name, NameFont) + 10;
+            var zone = runner.Zone.StartsWith("The ") ? runner.Zone.Substring(4) : runner.Zone;
+            DrawClipped(g, zone, ZoneFont, offline ? Faint : Secondary, zoneX, baseline - 1, LevelRight - 60 - zoneX, rightAlign: false);
 
             var levelUp = !offline && now - runner.LevelUpAt < LevelUpShown && run.Phase == Phase.Running;
             RightAligned(g, Progress(runner), LevelFont, levelUp ? Amber : main, LevelRight, baseline);
