@@ -1,0 +1,7 @@
+bin/
+obj/
+settings.json
+runs/
+runs.csv
+cloudflared.exe
+*.mp4
