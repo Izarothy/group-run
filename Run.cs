@@ -151,7 +151,10 @@ namespace GroupRun
             return runner;
         }
 
-        /// <summary>Runners in a fixed order, by name (r1, r2, …), the same on every board: nobody's row moves.</summary>
-        public IEnumerable<Runner> InOrder => Runners.Values.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase);
+        /// <summary>Furthest first: level plus the bar, so 12.80 is ahead of 12.40. An unread bar counts as the level's
+        /// start; ties go by name, so every board shows the same order.</summary>
+        public IEnumerable<Runner> InOrder => Runners.Values
+            .OrderByDescending(r => r.Level + Math.Min(r.Xp ?? 0, 0.999))
+            .ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase);
     }
 }
