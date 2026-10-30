@@ -13,6 +13,7 @@ namespace GroupRun
         public double? Xp;          // 0-1, null while the bar isn't readable
         public int Deaths;
         public string Zone = "";
+        public DateTime ZoneSince;   // when they entered it
         public string ReadyFor = ""; // id of the ready check this runner answered
         public string Problem = "";  // a Problems code: their setup can't be trusted yet
         public DateTime LastSeen;   // local time of the last update

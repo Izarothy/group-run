@@ -157,6 +157,7 @@ namespace GroupRun
                         loading = false;
                         inZone = true;
                         diedAt = null; // a new zone after dying: resurrected in town
+                        if (e.Text != self.Zone) self.ZoneSince = now;
                         self.Zone = e.Text;
                         record["zone"] = e.Text;
                         break;

@@ -39,6 +39,7 @@ namespace GroupRun
         public int HostPort = 47321;        // admin: the port runners connect to
         public string HostSecret = "";      // admin: the secret part of the join code, made on first host
         public string HostTopic = "";       // admin: where the current tunnel address is posted, made on first host
+        public string MacroKey = "";        // in game, e.g. "Ctrl+Z": type the callout in party chat and tell the group
         public string SplitsFile = "";      // admin: a LiveSplit .lss whose segment names are the group's zone splits
         public string OnTop = "running"; // "running" (while a run is live, as LiveSplit), "always" or "never"
         public string BackgroundColor = "#0a0b0e"; // flat, so OBS can colour-key it

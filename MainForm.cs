@@ -35,6 +35,7 @@ namespace GroupRun
         readonly Chrome chrome = new Chrome();
         readonly Timer tick = new Timer { Interval = 100 };
         readonly Voice voice = new Voice();
+        ChatMacro macro;
         readonly NotifyIcon tray;
         readonly List<Dictionary<string, object>> detail = new List<Dictionary<string, object>>();
         DateTime lastDetailSent = DateTime.MinValue;
@@ -96,6 +97,27 @@ namespace GroupRun
             SendSelf(force: true);
             if (settings.IsAdmin)
                 PublishSplits();
+            if (!sim)
+            {
+                macro = new ChatMacro(settings.MacroKey);
+                macro.Pressed += Callout;
+            }
+        }
+
+        /// <summary>
+        /// The callout key: "setup trial" right after entering a zone with a trial to set up (within 15 s of
+        /// The Lower Prison or The Crematorium, anywhere in The Marketplace), otherwise "swirl &lt;name&gt;". Typed in
+        /// party chat for the game and sent to the group to be spoken.
+        /// </summary>
+        void Callout()
+        {
+            var justEntered = DateTime.Now - local.ZoneSince <= TimeSpan.FromSeconds(15);
+            var trial = justEntered && (local.Zone == "The Lower Prison" || local.Zone == "The Crematorium")
+                || local.Zone == "The Marketplace";
+            var text = trial ? "setup trial" : "swirl " + settings.DisplayName;
+            if (!sim)
+                ChatMacro.Type("%" + text); // the sim has no game to type into
+            relay.Publish(new Dictionary<string, object> { ["t"] = "say", ["from"] = self.Id, ["text"] = text });
         }
 
         /// <summary>Admin: the split list from the .lss in Settings, with the group's PB and golds, to everyone.</summary>
@@ -285,6 +307,10 @@ namespace GroupRun
                         SplitRecords.FromMs(((System.Collections.IEnumerable)body["gold"]).Cast<object>()));
                     FitToBoard();
                     break;
+                case "say":
+                    voice.Say(Get(body, "text"));
+                    ShowNote(run.NameOf(Get(body, "from")) + ": " + Get(body, "text"));
+                    break;
                 case "split":
                     run.Splits.Mark(Convert.ToInt32(body["i"]), TimeSpan.FromMilliseconds(Convert.ToDouble(body["ms"])));
                     break;
@@ -338,6 +364,9 @@ namespace GroupRun
                     if (settings.IsAdmin)
                         PublishSplits(); // the next run compares against the PB and golds just saved
                     break;
+                case "callout":
+                    Callout();
+                    return;
                 case "settings":
                     if (hostProblem.Length > 0 && HostRetry != null && run.Phase == Phase.Waiting)
                         HostRetry(); // the notice on screen is the hosting one: fix that, not settings
@@ -662,6 +691,7 @@ namespace GroupRun
             EndRunLogs();
             relay.Dispose();
             voice.Dispose();
+            macro?.Dispose();
             if (tray != null)
                 tray.Visible = false;
             base.OnFormClosed(e);

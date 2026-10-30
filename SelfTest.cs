@@ -49,6 +49,8 @@ namespace GroupRun
                 (42, "paused", null),
                 (44, "r2 resumes", () => forms[1].Press("countdown")),
                 (46, "resume countdown", null),
+                (50, "r2 callout", () => forms[1].Press("callout")),
+                (51, "callout heard", null),
                 (55, "running", null),
                 (56, "admin finishes", () => admin.Press("finish")),
                 (63, "finished", null),
