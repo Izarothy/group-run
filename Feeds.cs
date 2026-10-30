@@ -55,6 +55,8 @@ namespace GroupRun
         readonly Settings settings;
         DateTime lastXpRead = DateTime.MinValue;
         bool loading;
+        DateTime loadingSince;
+        readonly Queue<double> recentBars = new Queue<double>(); // this level's last readings, for a median
         bool expectEmptyBar;    // the first trusted reading after a level-up
         double? lastBar;
         int lastBarLevel;
@@ -68,6 +70,7 @@ namespace GroupRun
         DateTime? diedAt;       // the death screen darkens the bar: no readings until we're back
         double? beforeDeath;    // the bar just before dying
         static readonly TimeSpan DeathScreenAtMost = TimeSpan.FromSeconds(60);
+        static readonly TimeSpan LoadingAtMost = TimeSpan.FromSeconds(8); // loads take 1-3 s
         string me;              // this runner's character, once known
         readonly List<(string Name, int Level, DateTime At)> pending = new List<(string, int, DateTime)>(); // level-ups waiting for the bar to say whose
         static readonly TimeSpan PendingFor = TimeSpan.FromSeconds(10);
@@ -152,6 +155,7 @@ namespace GroupRun
                         break;
                     case GameEventKind.Load:
                         loading = true;
+                        loadingSince = now;
                         break;
                     case GameEventKind.Zone:
                         loading = false;
@@ -193,6 +197,8 @@ namespace GroupRun
             gameRunning = XpBar.GameOrigin() != null;
             var front = gameRunning && XpBar.GameIsForeground();
             record["fg"] = front;
+            if (loading && DateTime.Now - loadingSince > LoadingAtMost)
+                loading = false; // no "You have entered" line came (some clients skip it): the screen is long gone
             var why = !settings.Xp.IsSet ? "uncalibrated" : !gameRunning ? "no game" : !front ? "background" : loading ? "loading" : "";
             if (why.Length > 0)
             {
@@ -215,8 +221,9 @@ namespace GroupRun
                 // character select, loading, a panel over the bar: not the bar, so no reading and no strike
                 record["bar"] = null;
                 record["why"] = "not visible";
-                if (read != null) record["err"] = Math.Round(read.Error, 1);
+                if (read != null && read.Error < double.MaxValue) record["err"] = Math.Round(read.Error, 1);
                 lastBar = null;
+                recentBars.Clear();
                 if (!inZone) barSeenAt = DateTime.Now;
                 return record;
             }
@@ -238,10 +245,21 @@ namespace GroupRun
             record["bar"] = Math.Round(bar, 4);
             record["err"] = Math.Round(read.Error, 1);
             ConfirmPending(self, bar, record);
+            // the board and the checks use the median of this level's last three readings: one flickering frame
+            // (a misfit at 0.99, a stray 0.10) neither shows nor counts as the bar going wrong
+            if (lastBarLevel != self.Level)
+                recentBars.Clear();
+            recentBars.Enqueue(bar);
+            if (recentBars.Count > 3)
+                recentBars.Dequeue();
+            bar = recentBars.OrderBy(b => b).ElementAt(recentBars.Count / 2);
             if (expectEmptyBar)
             {
-                expectEmptyBar = false;
-                if (bar > 0.3) Strike(record, "high after level-up");
+                if (recentBars.Count >= 2)
+                {
+                    expectEmptyBar = false;
+                    if (bar > 0.3) Strike(record, "high after level-up");
+                }
             }
             else if (lastBar.HasValue && lastBarLevel == self.Level && bar < lastBar.Value - 0.05)
                 Strike(record, "went backwards");

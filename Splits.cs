@@ -116,8 +116,8 @@ namespace GroupRun
         public static void Record(SplitList splits)
         {
             var count = splits.Names.Length;
-            if (count == 0 || splits.Times[count - 1] == null)
-                return;
+            if (count == 0 || splits.Times.Any(t => t == null))
+                return; // a run given up on and finished early isn't a time to compare against
             var final = splits.Times[count - 1].Value;
             var newPb = splits.Pb[count - 1] is TimeSpan pbFinal ? final < pbFinal : true;
             var pb = newPb ? splits.Times.ToArray() : splits.Pb.ToArray();
