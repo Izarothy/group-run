@@ -343,6 +343,7 @@ namespace GroupRun
             var zone = live ? Zones[Math.Min(Zones.Length - 1, (int)((progress - 1) * 2.2))] : default;
             if (live && zone.Name != self.Zone)
             {
+                self.ZoneSince = now;
                 detail.Add(new Dictionary<string, object> { ["k"] = "load" });
                 detail.Add(new Dictionary<string, object> { ["k"] = "area", ["area"] = zone.Area, ["alvl"] = zone.Level, ["seed"] = 0 });
                 detail.Add(new Dictionary<string, object> { ["k"] = "zone", ["zone"] = zone.Name });

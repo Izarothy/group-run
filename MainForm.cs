@@ -104,17 +104,22 @@ namespace GroupRun
             }
         }
 
+        DateTime? calledIn;     // the zone entry (ZoneSince) of the last callout; none yet
+
         /// <summary>
-        /// The callout key: "setup trial" right after entering a zone with a trial to set up (within 15 s of
-        /// The Lower Prison or The Crematorium, anywhere in The Marketplace), otherwise "swirl &lt;name&gt;". Typed in
-        /// party chat for the game and sent to the group to be spoken.
+        /// The callout key. The first press in a zone is "&lt;name&gt; next"; after that, "setup trial" right after
+        /// entering a zone with a trial to set up (within 15 s of The Lower Prison or The Crematorium, anywhere in
+        /// The Marketplace), otherwise "swirl &lt;name&gt;". Typed in party chat for the game and sent to the group
+        /// to be spoken.
         /// </summary>
         void Callout()
         {
             var justEntered = DateTime.Now - local.ZoneSince <= TimeSpan.FromSeconds(15);
             var trial = justEntered && (local.Zone == "The Lower Prison" || local.Zone == "The Crematorium")
                 || local.Zone == "The Marketplace";
-            var text = trial ? "setup trial" : "swirl " + settings.DisplayName;
+            var first = calledIn != local.ZoneSince;
+            calledIn = local.ZoneSince;
+            var text = first ? settings.DisplayName + " next" : trial ? "setup trial" : "swirl " + settings.DisplayName;
             if (!sim)
                 ChatMacro.Type("%" + text); // the sim has no game to type into
             relay.Publish(new Dictionary<string, object> { ["t"] = "say", ["from"] = self.Id, ["text"] = text });
