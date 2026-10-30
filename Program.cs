@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Linq;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -93,6 +94,12 @@ namespace GroupRun
             if (args.Length == 2 && args[0] == "--states")
             {
                 SelfTest.States(args[1]);
+                return;
+            }
+            if (args.Length == 2 && args[0] == "--report")
+            {
+                var log = RunLog.Load(args[1]);
+                Report.Save(TimeSpan.FromSeconds(log.Entries.Count == 0 ? 0 : log.Entries.Max(e => e.Seconds)), log, open: false);
                 return;
             }
             if (args.Length == 2 && args[0] == "--selftest")

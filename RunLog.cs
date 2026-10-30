@@ -32,6 +32,29 @@ namespace GroupRun
             writer = new StreamWriter(Path.Combine(FolderPath, fileName), append: true, new UTF8Encoding(false)) { NewLine = "\n" };
         }
 
+        RunLog(string folder, DateTime startedAt)
+        {
+            FolderPath = folder;
+            StartedAt = startedAt;
+        }
+
+        /// <summary>A finished run's log, read back from its folder (no writing), to rebuild its report.</summary>
+        public static RunLog Load(string folder)
+        {
+            var started = DateTime.TryParseExact(Path.GetFileName(folder.TrimEnd('\\', '/')), "yyyy-MM-dd_HHmmss",
+                System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var named)
+                ? named : Directory.GetCreationTime(folder);
+            var log = new RunLog(folder, started);
+            foreach (var line in File.ReadLines(Path.Combine(folder, "events.jsonl")))
+            {
+                if (line.Trim().Length == 0)
+                    continue;
+                var entry = Json.Deserialize<Dictionary<string, object>>(line);
+                log.Entries.Add((Convert.ToDouble(entry["s"]), (Dictionary<string, object>)entry["m"]));
+            }
+            return log;
+        }
+
         public static string Root(bool sim) => sim
             ? Path.Combine(Path.GetTempPath(), "GroupRun-sim")
             : Path.Combine(AppContext.BaseDirectory, "runs");
@@ -49,7 +72,7 @@ namespace GroupRun
             writer.Flush();
         }
 
-        public void Dispose() => writer.Dispose();
+        public void Dispose() => writer?.Dispose();
     }
 
     /// <summary>One runner's detail records from a run log, sorted by run time, ready for the report.</summary>

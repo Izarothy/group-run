@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Speech.Synthesis;
 
 namespace GroupRun
@@ -13,6 +15,12 @@ namespace GroupRun
         readonly SpeechSynthesizer synth = new SpeechSynthesizer();
 
         public bool Enabled = true;
+
+        // names the synthesizer spells out letter by letter, written the way they're said
+        static readonly Dictionary<string, string> Pronounced = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["iza"] = "eeza",
+        };
 
         public Voice()
         {
@@ -29,7 +37,7 @@ namespace GroupRun
             if (!Enabled)
                 return;
             synth.SpeakAsyncCancelAll();
-            synth.SpeakAsync(text);
+            synth.SpeakAsync(Regex.Replace(text, @"\w+", w => Pronounced.TryGetValue(w.Value, out var said) ? said : w.Value));
         }
 
         public void Dispose() => synth.Dispose();

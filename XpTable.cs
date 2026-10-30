@@ -34,5 +34,14 @@ namespace GroupRun
             var start = TotalAtLevel[level - 1];
             return start + Math.Max(0, Math.Min(1, bar)) * (TotalAtLevel[level] - start);
         }
+
+        /// <summary>The inverse of <see cref="Total"/>: level plus the bar's fraction, e.g. 17.53.</summary>
+        public static double Level(double total)
+        {
+            var level = 1;
+            while (level < 100 && TotalAtLevel[level] <= total)
+                level++;
+            return level == 100 ? 100 : level + (total - TotalAtLevel[level - 1]) / (TotalAtLevel[level] - TotalAtLevel[level - 1]);
+        }
     }
 }

@@ -20,11 +20,13 @@ namespace GroupRun
         static readonly string[] Colors = { "#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300" };
 
         /// <summary>Write the report into the run's folder and return its path; optionally open it.</summary>
-        public static string Save(Run run, RunLog log, bool open)
+        public static string Save(Run run, RunLog log, bool open) => Save(run.Elapsed, log, open);
+
+        public static string Save(TimeSpan elapsed, RunLog log, bool open)
         {
             var path = Path.Combine(log.FolderPath, "report.html");
             var json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-            File.WriteAllText(path, Template.Replace("__DATA__", json.Serialize(Data(run, log))));
+            File.WriteAllText(path, Template.Replace("__DATA__", json.Serialize(Data(elapsed, log))));
             if (open)
                 Process.Start(path);
             return path;
@@ -89,19 +91,26 @@ namespace GroupRun
             return loads;
         }
 
-        static Dictionary<string, object> Data(Run run, RunLog log)
+        static Dictionary<string, object> Data(TimeSpan elapsed, RunLog log)
         {
-            var duration = Math.Max(1, run.Elapsed.TotalSeconds);
+            var duration = Math.Max(1, elapsed.TotalSeconds);
+            var levelStep = Math.Max(5, duration / 400);
             var step = Math.Max(15, duration / 150);
             var histories = RunnerHistory.From(log)
                 .OrderBy(h => h.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             var runners = new List<Dictionary<string, object>>();
+            var curves = histories.Select(XpCurve).ToList();
+            double LevelAt(int runner, double t) => curves[runner].Count == 0 ? 1 : Math.Round(XpTable.Level(At(curves[runner], t)), 2);
             for (var i = 0; i < histories.Count; i++)
             {
                 var h = histories[i];
-                var curve = XpCurve(h);
+                var curve = curves[i];
+                var levels = new List<double[]>();
+                if (curve.Count > 0)
+                    for (var t = curve[0].Seconds; t <= duration + 0.001; t += levelStep)
+                        levels.Add(new[] { Math.Round(t), LevelAt(i, t) });
                 var gained = curve.Count == 0 ? 0 : curve[curve.Count - 1].Total - curve[0].Total;
                 var series = new List<double[]>();
                 for (var t = step; t <= duration + 0.001; t += step)
@@ -127,6 +136,7 @@ namespace GroupRun
                     ["loading"] = Math.Round(loads.Sum()),
                     ["readOk"] = possible.Count == 0 ? 0 : Math.Round(100.0 * possible.Count(r => r["bar"] != null && !r.ContainsKey("suspect")) / possible.Count),
                     ["series"] = series,
+                    ["levels"] = levels,
                     ["splits"] = h.Of("zone")
                         .GroupBy(r => (string)r["zone"])
                         .Where(g => !g.Key.EndsWith("Hideout"))
@@ -142,8 +152,44 @@ namespace GroupRun
                 .Select(g => g.Key)
                 .ToList();
 
+            var zoneLevels = Moments.ZoneLevels(histories);
+            var found = Moments.Find(histories);
+            var moments = found.Select(m => new Dictionary<string, object>
+            {
+                ["t"] = Math.Round(m.Seconds),
+                ["kind"] = m.Kind,
+                ["label"] = m.Label,
+                ["owner"] = m.Owner,
+                ["at"] = histories.Select((h, i) => LevelAt(i, m.Seconds)).ToList(),
+            }).ToList();
+            var gates = new List<Dictionary<string, object>>();
+            foreach (var gate in Moments.Gates)
+            {
+                if (!(Moments.When(gate, histories, found) is double t))
+                    continue;
+                var ranked = histories.Select((h, i) => LevelAt(i, t)).OrderByDescending(v => v).ToList();
+                gates.Add(new Dictionary<string, object>
+                {
+                    ["t"] = Math.Round(t), ["label"] = gate.Label, ["need"] = gate.Need, ["count"] = gate.Count,
+                    ["got"] = ranked.Count >= gate.Count ? ranked[gate.Count - 1] : 0,
+                });
+            }
+            // the deepest monster level the group had reached so far
+            var area = new List<double[]>();
+            var deepest = 0;
+            foreach (var g in histories.SelectMany(h => h.Of("zone")).GroupBy(r => (string)r["zone"])
+                .Where(g => zoneLevels.ContainsKey(g.Key)).OrderBy(g => g.Min(RunnerHistory.Seconds)))
+                if (zoneLevels[g.Key] > deepest)
+                {
+                    deepest = zoneLevels[g.Key];
+                    area.Add(new double[] { Math.Round(g.Min(RunnerHistory.Seconds)), deepest });
+                }
+
             return new Dictionary<string, object>
             {
+                ["moments"] = moments,
+                ["gates"] = gates,
+                ["area"] = area,
                 ["date"] = log.StartedAt.ToString("d MMM yyyy, HH:mm"),
                 ["duration"] = Math.Round(duration),
                 ["window"] = Window,
@@ -164,7 +210,7 @@ namespace GroupRun
 <style>
   :root {
     --bg: #0a0a0a; --panel: #111111; --text: #ededed; --secondary: #a1a1a1; --faint: #5c5c5c;
-    --line: #1f1f1f; --green: #45c46b;
+    --line: #1f1f1f; --green: #45c46b; --amber: #e5a50a; --red: #ec5b5b;
     --sans: "Geist", "Segoe UI", system-ui, sans-serif; --mono: "Geist Mono", Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -194,6 +240,9 @@ namespace GroupRun
   .tip div { display: flex; justify-content: space-between; gap: 14px; }
   .tip .t { color: var(--secondary); margin-bottom: 4px; }
   .note { color: var(--faint); font-size: 12px; margin-top: 8px; }
+  .gates { display: flex; gap: 6px 16px; flex-wrap: wrap; font: 12px var(--mono); color: var(--secondary); padding: 0 8px 10px; }
+  .gates b { font-weight: 500; }
+  .ok { color: var(--green); } .close { color: var(--amber); } .short { color: var(--red); }
 </style>
 </head>
 <body>
@@ -202,6 +251,9 @@ namespace GroupRun
 
   <h2>Results</h2>
   <div class="scroll"><table id="summary"></table></div>
+
+  <h2>Levels</h2>
+  <div class="chart" id="levels"><div class="gates" id="gates"></div><div class="tip" id="ltip"></div></div>
 
   <h2>XP per hour</h2>
   <div class="chart" id="chart"><div class="legend" id="legend"></div><div class="tip" id="tip"></div></div>
@@ -286,6 +338,123 @@ document.getElementById("note").textContent =
     tip.style.top = (e.clientY - cb.top - 20) + "px";
   });
   root.querySelector("#hit").addEventListener("mouseleave", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); dots.innerHTML = ""; });
+}
+
+// levels: everyone's level against the deepest area reached so far, the pace gates and the run's key moments
+{
+  const W = 940, H = 640, L = 40, R = 84, T = 50, B = 30, LANE = 24, PB = 410, DT = PB + 22, DB = H - B - LANE;
+  const box = document.getElementById("levels"), tip = document.getElementById("ltip");
+  const verdict = g => g.got >= g.need ? ["ok", "#45c46b"] : g.got >= g.need - 0.5 ? ["close", "#e5a50a"] : ["short", "#ec5b5b"];
+  document.getElementById("gates").innerHTML = data.gates.map(g =>
+    `<span>${esc(g.label)} <b class="${verdict(g)[0]}">${g.got.toFixed(1)}</b>/${g.need}${g.count > 1 ? ` ×${g.count}` : ""}</span>`).join("");
+
+  const top = Math.max(2, ...runners.flatMap(r => r.levels.map(p => p[1])), ...data.area.map(a => a[1]), ...data.gates.map(g => g.need));
+  const yStep = top > 50 ? 10 : 5, yMax = Math.ceil((top + 1) / yStep) * yStep;
+  const x = t => L + t / data.duration * (W - L - R), y = v => T + (1 - (v - 1) / (yMax - 1)) * (PB - T);
+  const text = (tx, ty, s, fill, anchor = "start", size = 11, font = "Geist Mono, monospace") =>
+    `<text x="${tx}" y="${ty}" text-anchor="${anchor}" fill="${fill}" font-family="${font}" font-size="${size}">${s}</text>`;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Levels over the run">`;
+  for (let v = yStep; v <= yMax; v += yStep)
+    svg += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="#1f1f1f"/>` + text(L - 8, y(v) + 4, v, "#5c5c5c", "end");
+  const tStep = [60, 120, 300, 600, 900, 1800, 3600].find(s => data.duration / s <= 8) || 7200;
+  for (let t = 0; t <= data.duration; t += tStep) svg += text(x(t), H - 8, time(t), "#5c5c5c", "middle");
+
+  // pushes: a rule down the chart, the name on the first of three rows where it fits
+  const rowEnd = [-1e9, -1e9, -1e9];
+  data.moments.filter(m => m.kind === "push").forEach(m => {
+    const w = m.label.length * 6.4, left = x(m.t) - w / 2;
+    const row = Math.max(0, rowEnd.findIndex(e => e < left - 6));
+    rowEnd[row] = left + w;
+    svg += `<line x1="${x(m.t)}" x2="${x(m.t)}" y1="${16 + row * 13}" y2="${DB}" stroke="#262626"/>`
+         + `<rect x="${left - 3}" y="${4 + row * 13}" width="${w + 6}" height="14" fill="#111111"/>`
+         + text(x(m.t), 15 + row * 13, esc(m.label), "#a1a1a1", "middle", 11, "Geist, sans-serif");
+  });
+
+  // deepest area level so far, as steps
+  if (data.area.length) {
+    let d = `M${x(data.area[0][0])},${y(data.area[0][1])}`;
+    data.area.slice(1).forEach(a => d += `H${x(a[0])}V${y(a[1])}`);
+    svg += `<path d="${d}H${x(data.duration)}" fill="none" stroke="#5c5c5c" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+  }
+
+  runners.forEach(r => {
+    if (!r.levels.length) return;
+    svg += `<path d="${r.levels.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("")}" fill="none" stroke="${r.color}" stroke-width="2" stroke-linejoin="round"/>`;
+  });
+  // direct labels at the line ends, nudged apart
+  const ends = runners.filter(r => r.levels.length).map(r => ({ name: r.name, v: r.levels[r.levels.length - 1][1].toFixed(1), fill: "#a1a1a1" }));
+  if (data.area.length) ends.push({ name: "area", v: data.area[data.area.length - 1][1], fill: "#5c5c5c" });
+  ends.forEach(e => e.ly = y(+e.v) + 4);
+  ends.sort((a, b) => a.ly - b.ly).forEach((e, i, all) => { if (i && e.ly - all[i - 1].ly < 13) e.ly = all[i - 1].ly + 13; });
+  ends.forEach(e => svg += text(W - R + 6, e.ly, `${e.name} ${e.v}`, e.fill, "start", 12, "Geist, sans-serif"));
+
+  // gates: the target as a tick, the runner it counts as a dot, the gap between them in the verdict's colour
+  data.gates.forEach(g => {
+    const gx = x(g.t), c = verdict(g)[1];
+    svg += `<line x1="${gx}" x2="${gx}" y1="${y(g.need)}" y2="${y(g.got)}" stroke="${c}" stroke-width="2"/>`
+         + `<line x1="${gx - 9}" x2="${gx + 9}" y1="${y(g.need)}" y2="${y(g.need)}" stroke="${c}" stroke-width="2"/>`
+         + `<circle cx="${gx}" cy="${y(g.got)}" r="4" fill="${c}" stroke="#111" stroke-width="2"/>`;
+  });
+
+  const placed = [];
+  data.gates.forEach(g => {
+    const w = g.label.length * 6, gx = x(g.t);
+    let ly = y(Math.max(g.need, g.got)) - 10;
+    while (placed.some(b => Math.abs(b.x - gx) < (b.w + w) / 2 + 4 && Math.abs(b.y - ly) < 12)) ly -= 12;
+    placed.push({ x: gx, y: ly, w });
+    svg += text(gx, ly, esc(g.label), verdict(g)[1], "middle", 10, "Geist, sans-serif");
+  });
+
+  // below: each runner's level minus the deepest area so far
+  const areaAt = t => data.area.reduce((v, a) => a[0] <= t ? a[1] : v, null);
+  const gaps = runners.map(r => r.levels.filter(p => areaAt(p[0]) != null).map(p => [p[0], p[1] - areaAt(p[0])]));
+  const gLo = Math.floor(Math.min(-4, ...gaps.flat().map(p => p[1])) / 2) * 2, gHi = Math.ceil(Math.max(2, ...gaps.flat().map(p => p[1])) / 2) * 2;
+  const gy = v => DT + (gHi - v) / (gHi - gLo) * (DB - DT);
+  for (let v = gLo; v <= gHi; v += gHi - gLo > 12 ? 4 : 2)
+    svg += `<line x1="${L}" x2="${W - R}" y1="${gy(v)}" y2="${gy(v)}" stroke="${v === 0 ? "#5c5c5c" : "#1f1f1f"}"${v === 0 ? ` stroke-dasharray="4 3"` : ""}/>`
+         + text(L - 8, gy(v) + 4, v > 0 ? "+" + v : v === 0 ? "area" : "−" + -v, "#5c5c5c", "end");
+  gaps.forEach((g, i) => {
+    if (!g.length) return;
+    svg += `<path d="${g.map((p, j) => `${j ? "L" : "M"}${x(p[0]).toFixed(1)},${gy(p[1]).toFixed(1)}`).join("")}" fill="none" stroke="${runners[i].color}" stroke-width="1.5" stroke-linejoin="round" opacity="0.9"/>`;
+  });
+
+  // chain starts and swirls in a lane under the charts
+  const laneY = DB + LANE / 2 + 2;
+  svg += `<line x1="${L}" x2="${W - R}" y1="${DB}" y2="${DB}" stroke="#1f1f1f"/>`;
+  data.moments.forEach(m => {
+    const mx = x(m.t);
+    if (m.kind === "chain") svg += `<path d="M${mx},${laneY - 6}L${mx + 5},${laneY + 4}H${mx - 5}Z" fill="#ededed"/>`;
+    if (m.kind === "swirl") svg += `<circle cx="${mx}" cy="${laneY}" r="4" fill="none" stroke="#a1a1a1" stroke-width="1.5"/>`;
+  });
+  svg += `<line id="lcross" y1="${T}" y2="${DB + LANE}" stroke="#5c5c5c" stroke-dasharray="3 3" visibility="hidden"/>`;
+  svg += `<g id="ldots"></g><rect x="${L}" y="0" width="${W - L - R}" height="${H - B}" fill="transparent" id="lhit"/></svg>`;
+  box.insertAdjacentHTML("beforeend", svg);
+
+  const root = box.querySelector("svg"), cross = root.querySelector("#lcross"), dots = root.querySelector("#ldots");
+  const levelAt = (r, t) => r.levels.length ? r.levels.reduce((b, q) => Math.abs(q[0] - t) < Math.abs(b[0] - t) ? q : b)[1] : null;
+  const marks = [
+    ...data.moments.map(m => ({ t: m.t, at: m.at, title: m.kind === "push" ? m.label : `${m.label} ${m.kind} · ${m.owner}` })),
+    ...data.gates.map(g => ({ t: g.t, title: `${g.label} · ${g.count > 1 ? g.count + " at " : ""}${g.need}+` })),
+  ];
+  root.querySelector("#lhit").addEventListener("mousemove", e => {
+    const bx = root.getBoundingClientRect(), px = (e.clientX - bx.left) * W / bx.width;
+    const near = marks.reduce((b, m) => !b || Math.abs(x(m.t) - px) < Math.abs(x(b.t) - px) ? m : b, null);
+    const mark = near && Math.abs(x(near.t) - px) <= 8 ? near : null;
+    const t = mark ? mark.t : Math.max(0, (px - L) / (W - L - R) * data.duration);
+    const area = areaAt(t);
+    const rows = runners.map((r, i) => ({ r, v: mark && mark.at ? mark.at[i] : levelAt(r, t) })).filter(o => o.v != null);
+    cross.setAttribute("x1", x(t)); cross.setAttribute("x2", x(t)); cross.setAttribute("visibility", "visible");
+    dots.innerHTML = rows.map(({ r, v }) => `<circle cx="${x(t)}" cy="${y(v)}" r="4" fill="${r.color}" stroke="#111" stroke-width="2"/>`).join("");
+    tip.innerHTML = `<div class="t"><span>${time(t)}</span><span>${mark ? esc(mark.title) : ""}</span></div>`
+      + (area ? `<div class="t"><span>area</span><span>${area}</span></div>` : "")
+      + rows.sort((a, b) => b.v - a.v).map(({ r, v }) => `<div><span><span class="swatch" style="background:${r.color}"></span>${r.name}</span>`
+        + `<span>${v.toFixed(2)}${area ? `<span class="gap">${v >= area ? "+" : "−"}${Math.abs(v - area).toFixed(1)}</span>` : ""}</span></div>`).join("");
+    tip.style.display = "block";
+    const cb = box.getBoundingClientRect(), cx = e.clientX - cb.left;
+    tip.style.left = (cx + 16 + tip.offsetWidth > cb.width ? cx - 16 - tip.offsetWidth : cx + 16) + "px";
+    tip.style.top = Math.max(0, e.clientY - cb.top - 20) + "px";
+  });
+  root.querySelector("#lhit").addEventListener("mouseleave", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); dots.innerHTML = ""; });
 }
 
 // splits: each runner's first entry into each zone, the fastest marked, the rest as a gap to it
