@@ -75,6 +75,7 @@ namespace GroupRun
         readonly List<(string Name, int Level, DateTime At)> pending = new List<(string, int, DateTime)>(); // level-ups waiting for the bar to say whose
         static readonly TimeSpan PendingFor = TimeSpan.FromSeconds(10);
         bool starting;          // the countdown to a new run (not a resume) is on
+        DateTime ownLevelUpAt = DateTime.MinValue; // our last named level-up: a bar reset then is ours, not someone else's
         List<GameEvent> earlier; // the log before the app started, until the first update has used it
 
         public GameFeed(Settings settings)
@@ -103,16 +104,7 @@ namespace GroupRun
             }
             var countdown = run.Phase == Phase.Countdown && !run.Resuming; // a replay after reconnecting is past it already
             if (countdown && !starting)
-            {
-                // a new run, often on a fresh character: find it again, and count its level and deaths from scratch;
-                // the next level-up sets the real level (a 5 on an old character overrides the 1)
-                if (settings.CharacterName.Trim().Length == 0) me = null;
-                self.Level = 1;
-                self.Xp = 0;
-                self.Deaths = 0;
-                lastBar = null;
-                expectEmptyBar = false;
-            }
+                NewCharacter(self); // a new run, often on a fresh character; a 5 on an old one overrides the 1 at its next level-up
             starting = countdown;
             if (earlier != null)
             {
@@ -140,7 +132,13 @@ namespace GroupRun
                             if (!settings.Xp.IsSet) me = e.Text; // nothing to check against: the first one is ours
                             else { pending.Add((e.Text, e.Level, now)); continue; }
                         }
-                        if (!string.Equals(e.Text, me, StringComparison.OrdinalIgnoreCase)) continue; // a party member's
+                        if (!string.Equals(e.Text, me, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (settings.CharacterName.Trim().Length == 0) // a name set in the settings stays ours
+                                pending.Add((e.Text, e.Level, now)); // a party member's, or ours on another character: the bar decides
+                            continue;
+                        }
+                        ownLevelUpAt = now;
                         self.SetLevel(e.Level, now);
                         self.Xp = 0; // the bar starts over: not the old level's fill on the new level until the next reading
                         expectEmptyBar = true;
@@ -158,6 +156,8 @@ namespace GroupRun
                         loadingSince = now;
                         break;
                     case GameEventKind.Zone:
+                        if (e.Text == "The Twilight Strand" && self.Zone != e.Text)
+                            NewCharacter(self); // every character starts there
                         loading = false;
                         inZone = true;
                         diedAt = null; // a new zone after dying: resurrected in town
@@ -189,6 +189,18 @@ namespace GroupRun
                 lastXpRead = now;
                 detail.Add(ReadBar(self));
             }
+        }
+
+        /// <summary>Count a fresh character from scratch, and find out its name again from its level-ups.</summary>
+        void NewCharacter(Runner self)
+        {
+            if (settings.CharacterName.Trim().Length == 0) me = null;
+            self.Level = 1;
+            self.Xp = 0;
+            self.Deaths = 0;
+            lastBar = null;
+            expectEmptyBar = false;
+            pending.Clear();
         }
 
         Dictionary<string, object> ReadBar(Runner self)
@@ -280,6 +292,8 @@ namespace GroupRun
                 return;
             var recent = pending.Where(p => DateTime.Now - p.At <= PendingFor).ToList();
             pending.Clear();
+            if (DateTime.Now - ownLevelUpAt <= PendingFor)
+                return; // our own level-up emptied the bar: a party member levelling meanwhile isn't us
             // no reading before (the colours not learned yet, early on a fresh character): a low bar now is all there is
             var reset = bar <= 0.2 && (!(lastBar is double before) || before - bar > 0.5);
             if (!reset || recent.Select(p => p.Name).Distinct().Count() != 1)
