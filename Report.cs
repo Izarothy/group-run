@@ -39,7 +39,7 @@ namespace GroupRun
         static List<(double Seconds, double Total)> XpCurve(RunnerHistory h)
         {
             var points = h.Records
-                .Where(r => (r["k"] as string) == "xp" && r["bar"] != null && !r.ContainsKey("suspect") || (r["k"] as string) == "levelup")
+                .Where(r => (r["k"] as string) == "xp" && r["bar"] != null && !r.ContainsKey("suspect") || (r["k"] as string) == "levelup" && r.ContainsKey("lvl"))
                 .Select(r => (Seconds: RunnerHistory.Seconds(r),
                     Total: XpTable.Total(Convert.ToInt32(r["lvl"]), r.TryGetValue("bar", out var bar) && bar != null ? Convert.ToDouble(bar) : 0)))
                 .ToList();
