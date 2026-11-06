@@ -134,6 +134,15 @@ namespace GroupRun
                 {
                     case GameEventKind.LevelUp:
                         // names aren't stored: "who" says how the level-up was taken
+                        // level 2 happens on the Twilight Strand, always solo: that name is ours, a fresh character if it's a new one
+                        if (e.Level == 2 && settings.CharacterName.Trim().Length == 0)
+                        {
+                            if (me != null && !string.Equals(e.Text, me, StringComparison.OrdinalIgnoreCase))
+                                NewCharacter(self, "level 2 under a new name", detail);
+                            if (me == null) record["who"] = "level 2: solo, so ours";
+                            me = e.Text;
+                            pending.Clear();
+                        }
                         if (me == null)
                         {
                             if (!settings.Xp.IsSet) me = e.Text; // nothing to check against: the first one is ours
