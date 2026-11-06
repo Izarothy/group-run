@@ -34,6 +34,7 @@ namespace GroupRun
             ["xp-setup"] = new Info { Title = "XP bar not set up", Hint = "Settings", Short = "no XP", Warning = true },
             ["xp-off"] = new Info { Title = "XP bar reading looks off", Hint = "Settings", Short = "check XP", Warning = true },
             ["game"] = new Info { Title = "Path of Exile isn't running", Hint = "", Short = "no game", Warning = false },
+            ["log-quiet"] = new Info { Title = "Client.txt has loads but no level-up or zone lines", Hint = "", Short = "log quiet", Warning = true },
         };
     }
 
@@ -77,6 +78,9 @@ namespace GroupRun
         bool starting;          // the countdown to a new run (not a resume) is on
         DateTime ownLevelUpAt = DateTime.MinValue; // our last named level-up: a bar reset then is ours, not someone else's
         List<GameEvent> earlier; // the log before the app started, until the first update has used it
+        int loadsWithoutMessage; // areas generated since the log last wrote a message line (zone, level-up, chat)
+        const int QuietAfterLoads = 3; // some clients stop writing message lines but keep writing loads
+        bool LogQuiet => loadsWithoutMessage >= QuietAfterLoads;
 
         public GameFeed(Settings settings)
         {
@@ -91,6 +95,7 @@ namespace GroupRun
             : !settings.Xp.IsSet ? "xp-setup"
             : !gameRunning ? "game"
             : RecentStrikes() >= StrikesForProblem || DateTime.Now - barSeenAt > BlindAtMost ? "xp-off"
+            : LogQuiet ? "log-quiet"
             : "";
 
         public void Update(Runner self, Run run, DateTime now, List<Dictionary<string, object>> detail)
@@ -104,7 +109,7 @@ namespace GroupRun
             }
             var countdown = run.Phase == Phase.Countdown && !run.Resuming; // a replay after reconnecting is past it already
             if (countdown && !starting)
-                NewCharacter(self); // a new run, often on a fresh character; a 5 on an old one overrides the 1 at its next level-up
+                NewCharacter(self, "countdown", detail); // a new run, often on a fresh character; a 5 on an old one overrides the 1 at its next level-up
             starting = countdown;
             if (earlier != null)
             {
@@ -124,18 +129,29 @@ namespace GroupRun
                     ["logged"] = e.LoggedAt.ToString("yyyy-MM-ddTHH:mm:ss"),
                     ["tick"] = e.Tick,
                 };
+                NoteLogHealth(e, detail);
                 switch (e.Kind)
                 {
                     case GameEventKind.LevelUp:
+                        // names aren't stored: "who" says how the level-up was taken
                         if (me == null)
                         {
                             if (!settings.Xp.IsSet) me = e.Text; // nothing to check against: the first one is ours
-                            else { pending.Add((e.Text, e.Level, now)); continue; }
+                            else
+                            {
+                                pending.Add((e.Text, e.Level, now));
+                                record["who"] = "unknown: waiting for the bar to reset";
+                                record["to"] = e.Level;
+                                detail.Add(record);
+                                continue;
+                            }
                         }
                         if (!string.Equals(e.Text, me, StringComparison.OrdinalIgnoreCase))
                         {
-                            if (settings.CharacterName.Trim().Length == 0) // a name set in the settings stays ours
-                                pending.Add((e.Text, e.Level, now)); // a party member's, or ours on another character: the bar decides
+                            // a party member's: once we know who we are, never someone else (only a new character asks again)
+                            record["who"] = "other";
+                            record["to"] = e.Level;
+                            detail.Add(record);
                             continue;
                         }
                         ownLevelUpAt = now;
@@ -157,7 +173,7 @@ namespace GroupRun
                         break;
                     case GameEventKind.Zone:
                         if (e.Text == "The Twilight Strand" && self.Zone != e.Text)
-                            NewCharacter(self); // every character starts there
+                            NewCharacter(self, "twilight strand", detail); // every character starts there
                         loading = false;
                         inZone = true;
                         diedAt = null; // a new zone after dying: resurrected in town
@@ -192,9 +208,17 @@ namespace GroupRun
         }
 
         /// <summary>Count a fresh character from scratch, and find out its name again from its level-ups.</summary>
-        void NewCharacter(Runner self)
+        void NewCharacter(Runner self, string reason, List<Dictionary<string, object>> detail)
         {
-            if (settings.CharacterName.Trim().Length == 0) me = null;
+            var forget = settings.CharacterName.Trim().Length == 0;
+            detail.Add(new Dictionary<string, object>
+            {
+                ["k"] = "character",
+                ["why"] = reason,
+                ["from"] = self.Level,
+                ["name"] = forget ? (me == null ? "still unknown" : "forgotten, found again at the next level-up") : "set in settings",
+            });
+            if (forget) me = null;
             self.Level = 1;
             self.Xp = 0;
             self.Deaths = 0;
@@ -265,7 +289,16 @@ namespace GroupRun
             if (recentBars.Count > 3)
                 recentBars.Dequeue();
             bar = recentBars.OrderBy(b => b).ElementAt(recentBars.Count / 2);
-            if (expectEmptyBar)
+            if (LogQuiet && !expectEmptyBar && lastBar is double full && full >= 0.7 && bar <= 0.25 && lastBarLevel == self.Level)
+            {
+                // no level-up line will come: a bar gone from nearly full to nearly empty is one
+                self.SetLevel(self.Level + 1, DateTime.Now);
+                record["lvl"] = self.Level;
+                record["levelup"] = $"from the bar ({full:0.00} to {bar:0.00}): log quiet";
+                recentBars.Clear();
+                recentBars.Enqueue(bar);
+            }
+            else if (expectEmptyBar)
             {
                 if (recentBars.Count >= 2)
                 {
@@ -292,17 +325,44 @@ namespace GroupRun
                 return;
             var recent = pending.Where(p => DateTime.Now - p.At <= PendingFor).ToList();
             pending.Clear();
-            if (DateTime.Now - ownLevelUpAt <= PendingFor)
-                return; // our own level-up emptied the bar: a party member levelling meanwhile isn't us
+            // every way this can fail is recorded: a level stuck at an old number shows which one keeps happening
+            if (me != null) { record["whose"] = "dropped: already know who we are"; return; }
+            if (recent.Count == 0) { record["whose"] = "dropped: over 10 s old"; return; }
+            if (DateTime.Now - ownLevelUpAt <= PendingFor) { record["whose"] = "dropped: our own level-up just reset the bar"; return; }
+            if (recent.Select(p => p.Name).Distinct().Count() != 1) { record["whose"] = "dropped: two names levelled"; return; }
             // no reading before (the colours not learned yet, early on a fresh character): a low bar now is all there is
             var reset = bar <= 0.2 && (!(lastBar is double before) || before - bar > 0.5);
-            if (!reset || recent.Select(p => p.Name).Distinct().Count() != 1)
-                return; // too late to tell, our bar didn't reset, or two names levelled: wait for the next level-up
+            if (!reset)
+            {
+                record["whose"] = lastBar is double was
+                    ? $"not ours: bar {was:0.00} to {bar:0.00}, no reset"
+                    : $"not ours: bar {bar:0.00}, not near empty";
+                return;
+            }
             var (name, level, _) = recent[recent.Count - 1];
             me = name;
             self.SetLevel(level, DateTime.Now);
             record["lvl"] = level;
             record["character"] = "recognised"; // the name itself isn't stored
+        }
+
+        /// <summary>
+        /// Some clients keep writing loads ("Generating level ...") but stop writing message lines: no zones, no
+        /// level-ups, so the level sticks. Recorded when it starts and stops; while it lasts the bar levels us up.
+        /// </summary>
+        void NoteLogHealth(GameEvent e, List<Dictionary<string, object>> detail)
+        {
+            var wasQuiet = LogQuiet;
+            if (e.Kind == GameEventKind.Area) loadsWithoutMessage++;
+            else if (e.Kind != GameEventKind.Load) loadsWithoutMessage = 0;
+            if (LogQuiet != wasQuiet)
+                detail.Add(new Dictionary<string, object>
+                {
+                    ["k"] = "log",
+                    ["why"] = LogQuiet
+                        ? $"quiet: {QuietAfterLoads} loads with no zone, level-up or chat line; levelling from the bar"
+                        : "messages back",
+                });
         }
 
         int RecentStrikes()

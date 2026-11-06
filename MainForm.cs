@@ -105,21 +105,31 @@ namespace GroupRun
         }
 
         DateTime? calledIn;     // the zone entry (ZoneSince) of the last callout; none yet
+        bool weaverReached;     // someone has been in The Weaver's Chambers this run: the Western Forest waypoint is old news
 
         /// <summary>
-        /// The callout key. The first press in a zone is "&lt;name&gt; soon"; after that, "setup trial" right after
-        /// entering a zone with a trial to set up (within 15 s of The Lower Prison or The Crematorium, anywhere in
-        /// The Marketplace), otherwise "swirl &lt;name&gt;". Typed in party chat for the game and sent to the group
-        /// to be spoken.
+        /// The callout key. Where the only call is a waypoint (The Riverways, The Crossroads, The Western Forest
+        /// until someone reaches The Weaver's Chambers), "&lt;zone&gt; wp on &lt;name&gt;". Elsewhere the first press in a zone
+        /// is "&lt;name&gt; soon"; after that, "setup trial on &lt;name&gt;" right after entering a zone with a trial to set
+        /// up (within 15 s of The Lower Prison or The Crematorium, anywhere in The Marketplace), otherwise
+        /// "swirl &lt;name&gt;". Typed in party chat for the game and sent to the group to be spoken.
         /// </summary>
         void Callout()
         {
+            var name = settings.DisplayName;
             var justEntered = DateTime.Now - local.ZoneSince <= TimeSpan.FromSeconds(15);
             var trial = justEntered && (local.Zone == "The Lower Prison" || local.Zone == "The Crematorium")
                 || local.Zone == "The Marketplace";
+            var waypoint = local.Zone == "The Riverways" ? "riverways"
+                : local.Zone == "The Crossroads" ? "crossroads"
+                : local.Zone == "The Western Forest" && !weaverReached ? "western"
+                : null;
             var first = calledIn != local.ZoneSince;
             calledIn = local.ZoneSince;
-            var text = first ? settings.DisplayName + " soon" : trial ? "setup trial" : "swirl " + settings.DisplayName;
+            var text = waypoint != null ? $"{waypoint} wp on {name}"
+                : first ? name + " soon"
+                : trial ? "setup trial on " + name
+                : "swirl " + name;
             if (!sim)
                 ChatMacro.Type("%" + text); // the sim has no game to type into
             relay.Publish(new Dictionary<string, object> { ["t"] = "say", ["from"] = self.Id, ["text"] = text });
@@ -297,6 +307,7 @@ namespace GroupRun
                     runner.Xp = body.TryGetValue("xp", out var xp) && xp != null ? Convert.ToDouble(xp) : (double?)null;
                     runner.Deaths = Convert.ToInt32(body["deaths"]);
                     runner.Zone = Get(body, "zone");
+                    if (runner.Zone == "The Weaver's Chambers") weaverReached = true;
                     runner.ReadyFor = Get(body, "ready");
                     runner.Problem = Get(body, "problem");
                     runner.LastSeen = now - message.Age;
@@ -423,6 +434,7 @@ namespace GroupRun
             self.Xp = local.Xp;
             self.Deaths = local.Deaths;
             self.Zone = local.Zone;
+            if (self.Zone == "The Weaver's Chambers") weaverReached = true;
             self.ReadyFor = local.ReadyFor;
             self.Problem = feed.Problem;
             relay.Publish(new Dictionary<string, object>
@@ -546,7 +558,10 @@ namespace GroupRun
             else if (phase != lastPhase)
             {
                 if (lastPhase == Phase.Countdown && phase == Phase.Running)
+                {
+                    weaverReached = false; // a new run
                     voice.Say("Go!");
+                }
                 else if (lastPhase == Phase.Countdown || run.SinceCancel < TimeSpan.FromSeconds(1))
                     voice.Say($"{Spoken(run.CancelledBy)} is not ready");
                 else if (phase == Phase.Paused)
