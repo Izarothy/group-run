@@ -6,7 +6,7 @@ namespace GroupRun
 {
     /// <summary>
     /// First-run and Settings dialog: name, Client.txt, runner or admin (join code to paste, or the hosted one to
-    /// copy), XP bar calibration, on top, voice, buttons. Changes apply on Save.
+    /// copy), on top, voice, buttons. Changes apply on Save.
     /// </summary>
     public sealed class SetupForm : Form
     {
@@ -21,19 +21,16 @@ namespace GroupRun
         readonly UiSegment voice = new UiSegment("On", "Off");
         readonly UiSegment buttons = new UiSegment("Show", "Hide");
         readonly UiButton copy = new UiButton { Text = "Copy", Margin = new Padding(8, 1, 0, 0) };
-        readonly Label xpState = new Label { AutoSize = true, Font = Ui.BodyMedium, Margin = new Padding(0, 9, 12, 0) };
         readonly Label splitsState = new Label { AutoSize = true, Font = Ui.BodyMedium, Margin = new Padding(0, 9, 12, 0), MaximumSize = new Size(FieldWidth - 160, 0) };
         readonly Control splitsCaption = Ui.Caption("Splits");
         FlowLayoutPanel splitsRow;
         string splitsFile;
-        XpRegion xp;
 
         /// <param name="hostedCode">The admin's current join code, to copy; "" when not hosting.</param>
         public SetupForm(Settings settings, string hostedCode = "")
         {
             this.settings = settings;
             this.hostedCode = hostedCode;
-            xp = settings.Xp;
             Text = "Group Run";
             Ui.Dress(this);
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -73,12 +70,6 @@ namespace GroupRun
             role.Selected = settings.IsAdmin ? 1 : 0;
             ShowRole();
 
-            layout.Controls.Add(Ui.Caption("XP bar"));
-            var calibrate = new UiButton { Text = "Calibrate" };
-            calibrate.Click += Calibrate;
-            layout.Controls.Add(Row(xpState, calibrate));
-            ShowXp();
-
             layout.Controls.Add(Ui.Caption("On top"));
             onTop.Selected = Math.Max(0, Array.IndexOf(OnTopValues, settings.OnTop));
             layout.Controls.Add(onTop);
@@ -99,7 +90,6 @@ namespace GroupRun
                 if (role.Selected == 0) settings.GroupCode = code.Text.Trim();
                 settings.IsAdmin = role.Selected == 1;
                 settings.SplitsFile = splitsFile;
-                settings.Xp = xp;
                 settings.OnTop = OnTopValues[onTop.Selected];
                 settings.Voice = voice.Selected == 0;
                 settings.Overlay = buttons.Selected == 1;
@@ -138,22 +128,6 @@ namespace GroupRun
                 {
                     splitsFile = dialog.FileName;
                     ShowSplits();
-                }
-        }
-
-        void ShowXp()
-        {
-            xpState.Text = !xp.IsSet ? "Not set" : xp.Learned ? "Set" : "Set, learning";
-            xpState.ForeColor = xp.IsSet ? Ui.Fg : Color.FromArgb(245, 165, 36);
-        }
-
-        void Calibrate(object sender, EventArgs e)
-        {
-            using (var form = new CalibrationForm(xp))
-                if (form.ShowDialog(this) == DialogResult.OK)
-                {
-                    xp = form.Result;
-                    ShowXp();
                 }
         }
 

@@ -33,8 +33,8 @@ namespace GroupRun
         }
 
         /// <summary>
-        /// Total XP over run time from the bar readings and level-ups. A single reading that disagrees with both
-        /// neighbours is dropped (median of three), and XP never goes down except across a death.
+        /// Total XP over run time from the level-ups (and the sim's bar readings). A single reading that disagrees with
+        /// both neighbours is dropped (median of three), and XP never goes down except across a death.
         /// </summary>
         static List<(double Seconds, double Total)> XpCurve(RunnerHistory h)
         {
@@ -118,23 +118,19 @@ namespace GroupRun
                     var window = Math.Min(Window, t);
                     series.Add(new[] { Math.Round(t), Math.Round((At(curve, t) - At(curve, t - window)) / window * 3600) });
                 }
-                var reads = h.Of("xp").ToList();
-                // reads that could have worked: the game in front, not loading (a null "why" means a failed read)
-                var possible = reads.Where(r => !r.ContainsKey("why")).ToList();
-                var lastXp = reads.LastOrDefault(r => r["bar"] != null);
+                var lastLevel = h.Of("levelup").LastOrDefault(r => r.ContainsKey("lvl"));
                 var loads = Loads(h);
                 runners.Add(new Dictionary<string, object>
                 {
                     ["name"] = h.Name,
                     ["color"] = Colors[i % Colors.Length],
-                    ["level"] = lastXp == null ? 1 : Math.Round(Convert.ToInt32(lastXp["lvl"]) + Convert.ToDouble(lastXp["bar"]), 2),
+                    ["level"] = lastLevel == null ? 1 : Convert.ToInt32(lastLevel["lvl"]),
                     ["gained"] = Math.Round(gained),
                     ["average"] = Math.Round(gained / duration * 3600),
                     ["peak"] = series.Count == 0 ? 0 : series.Max(p => p[1]),
                     ["deaths"] = h.Of("death").Count(),
                     ["loads"] = loads.Count,
                     ["loading"] = Math.Round(loads.Sum()),
-                    ["readOk"] = possible.Count == 0 ? 0 : Math.Round(100.0 * possible.Count(r => r["bar"] != null && !r.ContainsKey("suspect")) / possible.Count),
                     ["series"] = series,
                     ["levels"] = levels,
                     ["splits"] = h.Of("zone")
@@ -275,16 +271,16 @@ const el = (tag, html, cls) => { const e = document.createElement(tag); e.innerH
 
 document.getElementById("meta").innerHTML = `${data.date}<b>${time(data.duration)}</b>`;
 document.getElementById("note").textContent =
-  `XP/h over the previous ${data.window / 60} minutes, from the in-game XP table. The bar is read every 2 s; single misreads are filtered out.`;
+  `XP/h over the previous ${data.window / 60} minutes, from the in-game XP table. Steps at each level-up from Client.txt.`;
 
 // results
 {
   const t = document.getElementById("summary");
-  t.append(el("tr", "<th>Runner</th><th>Level</th><th>XP gained</th><th>Avg XP/h</th><th>Peak XP/h</th><th>Deaths</th><th>Loading</th><th>XP reads</th>"));
+  t.append(el("tr", "<th>Runner</th><th>Level</th><th>XP gained</th><th>Avg XP/h</th><th>Peak XP/h</th><th>Deaths</th><th>Loading</th>"));
   runners.forEach(r => {
     const tr = el("tr", `<td class="name"><span class="swatch" style="background:${r.color}"></span>${r.name}</td>
-      <td>${r.level.toFixed(2)}</td><td>${xp(r.gained)}</td><td>${xp(r.average)}</td><td>${xp(r.peak)}</td><td>${r.deaths}</td>
-      <td>${time(r.loading)}<span class="gap">${r.loads}×</span></td><td>${r.readOk}%</td>`);
+      <td>${r.level}</td><td>${xp(r.gained)}</td><td>${xp(r.average)}</td><td>${xp(r.peak)}</td><td>${r.deaths}</td>
+      <td>${time(r.loading)}<span class="gap">${r.loads}×</span></td>`);
     t.append(tr);
   });
 }

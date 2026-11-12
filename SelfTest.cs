@@ -120,7 +120,7 @@ namespace GroupRun
             }
         }
 
-        /// <summary>GroupRun.exe --dialogs out-folder: the setup and XP bar windows rendered to PNGs, never shown.</summary>
+        /// <summary>GroupRun.exe --dialogs out-folder: the setup windows rendered to PNGs, never shown.</summary>
         public static void Dialogs(string output)
         {
             Directory.CreateDirectory(output);
@@ -265,8 +265,7 @@ namespace GroupRun
             {
                 ("admin-port-closed", admin),
                 ("no-client-txt", Runner("r2", new WsRelay(Code(hub, "right")), new StuckFeed("log"))),
-                ("xp-looks-off", Runner("r3", new WsRelay(Code(hub, "right")), new StuckFeed("xp-off"))),
-                ("xp-not-set-up", Runner("r4", new WsRelay(Code(hub, "right")), new StuckFeed("xp-setup"))),
+                ("log-quiet", Runner("r3", new WsRelay(Code(hub, "right")), new StuckFeed("log-quiet"))),
                 ("game-not-running", Runner("r5", new WsRelay(Code(hub, "right")), new StuckFeed("game"))),
                 ("no-join-code", Runner("r6", new WsRelay(null), new SimFeed(1))),
                 ("cant-reach-admin", Runner("r7", new WsRelay(new JoinCode { Host = "127.0.0.1:" + closedPort, Secret = "right" }), new SimFeed(1), "127.0.0.1:" + closedPort + "/right")),

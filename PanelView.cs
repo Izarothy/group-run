@@ -343,8 +343,8 @@ namespace GroupRun
             t.TotalHours >= 1 ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}" : $"{t.Minutes}:{t.Seconds:00}";
 
 
-        /// <summary>Level and XP as one number: 17.53 = level 17, 53% of the way to 18.</summary>
-        static string Progress(Runner r) => r.Xp is double xp ? (r.Level + Math.Min(xp, 0.999)).ToString("0.00") : r.Level + ".—";
+        /// <summary>Level, with the XP into it when the runner reports it (the sim and the demo): 17.53 = level 17, 53% of the way to 18.</summary>
+        static string Progress(Runner r) => r.Xp is double xp ? (r.Level + Math.Min(xp, 0.999)).ToString("0.00") : r.Level.ToString();
 
         static void Rule(Graphics g, float top) => Fill(g, Line, Pad, top, Width - 2 * Pad, 1);
 

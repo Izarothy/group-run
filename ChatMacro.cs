@@ -55,7 +55,7 @@ namespace GroupRun
             if (code >= 0 && (message == (IntPtr)WM_KEYDOWN || message == (IntPtr)WM_SYSKEYDOWN))
             {
                 var pressed = (Keys)Marshal.ReadInt32(data);
-                if (pressed == key && Control.ModifierKeys == modifiers && XpBar.GameIsForeground())
+                if (pressed == key && Control.ModifierKeys == modifiers && Game.IsForeground())
                 {
                     // after this callback returns: typing from inside the hook would feed our own keys back in
                     Application.OpenForms.Cast<Form>().FirstOrDefault()?.BeginInvoke(new Action(() => Pressed?.Invoke()));

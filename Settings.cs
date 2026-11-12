@@ -5,24 +5,6 @@ using System.Web.Script.Serialization;
 
 namespace GroupRun
 {
-    /// <summary>XP bar location, relative to the top-left of the Path of Exile window's client area.</summary>
-    public sealed class XpRegion
-    {
-        public int X;
-        public int Y;
-        public int Width;
-        public int Height;
-        public int Filled;  // ARGB of a filled column, learned from the bar itself
-        public int Empty;   // ARGB of an empty column
-
-        public bool IsSet => Width > 4 && Height > 0;
-        public bool Learned => Filled != Empty;
-
-        public XpRegion Copy() => (XpRegion)MemberwiseClone();
-
-        public override int GetHashCode() => (X, Y, Width, Height, Filled, Empty).GetHashCode();
-    }
-
     /// <summary>Everything the app remembers, in settings.json next to the exe.</summary>
     public sealed class Settings
     {
@@ -33,7 +15,6 @@ namespace GroupRun
         public bool IsAdmin;
         public string RunnerId = Guid.NewGuid().ToString("N").Substring(0, 12);
         public string RunnerMachine = Environment.MachineName; // the PC RunnerId was made on
-        public XpRegion Xp = new XpRegion();
         public bool Voice = true;
         public bool Overlay;                // buttons hidden: just the board, for OBS
         public int HostPort = 47321;        // admin: the port runners connect to
@@ -64,7 +45,6 @@ namespace GroupRun
             }
             if (loaded == null)
                 return new Settings { ClientLogPath = GuessClientLog() };
-            loaded.Xp = loaded.Xp ?? new XpRegion();
             if (loaded.RunnerMachine != Environment.MachineName)
             {
                 // copied from another PC (a ready-made folder from a friend): two runners with one id share a row on

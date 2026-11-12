@@ -14,7 +14,7 @@ namespace GroupRun
     /// sends their own level and XP, answers the ready check (and can take it back, which cancels the
     /// countdown) and can pause the run; the admin also starts, finishes and resets it. When everyone is
     /// ready the admin's copy starts a spoken countdown. Right-click the board or the tray icon for overlay
-    /// mode (board only, for OBS), voice, XP bar calibration, settings and updates.
+    /// mode (board only, for OBS), voice, settings and updates.
     /// </summary>
     public sealed class MainForm : Form
     {
@@ -58,7 +58,7 @@ namespace GroupRun
         Version declined;       // turned down this session: the quiet checks don't ask again
         readonly Timer updateCheck = new Timer { Interval = 60 * 60 * 1000 };
 
-        /// <param name="sim">Sim mode: settings, calibration and updates are off, and runs are saved to a temp folder.</param>
+        /// <param name="sim">Sim mode: settings and updates are off, and runs are saved to a temp folder.</param>
         /// <param name="primary">Speaks and has the tray icon; the sim makes only one window primary.</param>
         public MainForm(Settings settings, IRelay relay, IGameFeed feed, bool sim = false, bool primary = true)
         {
