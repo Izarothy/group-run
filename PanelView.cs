@@ -29,6 +29,7 @@ namespace GroupRun
         public bool IsAdmin;
         public string GroupCode = "";
         public Notice Notice;            // shown above the buttons: what's wrong and how to fix it
+        public MapBuckets Maps = new MapBuckets();
     }
 
     /// <summary>
@@ -111,7 +112,7 @@ namespace GroupRun
             var top = HeaderHeight;
             foreach (var runner in run.InOrder)
             {
-                DrawRow(g, run, runner, top, now);
+                DrawRow(g, run, runner, top, now, chrome.Maps);
                 top += RowHeight;
             }
             if (run.Runners.Count == 0)
@@ -191,7 +192,7 @@ namespace GroupRun
             }
         }
 
-        static void DrawRow(Graphics g, Run run, Runner runner, int top, DateTime now)
+        static void DrawRow(Graphics g, Run run, Runner runner, int top, DateTime now, MapBuckets maps)
         {
             Rule(g, top);
             var baseline = top + 19;
@@ -221,9 +222,21 @@ namespace GroupRun
                 (tail, tailColor) = ("paused", Amber);
             else if (offline)
                 (tail, tailColor) = ("offline", Faint);
+            else if (runner.InMap)
+                (tail, tailColor) = MapTail(runner, now, maps);
             else
                 (tail, tailColor) = ("", Secondary);
             RightAligned(g, tail, GapFont, tailColor, GapRight, baseline - 1);
+        }
+
+        /// <summary>In a map: its bucket and how long they've been in it, "long 1:12".</summary>
+        static (string, Color) MapTail(Runner runner, DateTime now, MapBuckets maps)
+        {
+            var bucket = maps.Of(runner.Zone);
+            var color = bucket == Bucket.Rush ? Green : bucket == Bucket.Mid ? Blue : bucket == Bucket.Long ? Amber : Faint;
+            var label = bucket == Bucket.None ? "?" : MapBuckets.Name(bucket);
+            var since = runner.ZoneSince == default ? TimeSpan.Zero : now - runner.ZoneSince;
+            return (label + " " + FormatTime(since < TimeSpan.Zero ? TimeSpan.Zero : since), color);
         }
 
         static int SplitsHeight(SplitList splits) =>

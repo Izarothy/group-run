@@ -14,6 +14,9 @@ namespace GroupRun
         public int Deaths;
         public string Zone = "";
         public DateTime ZoneSince;   // when they entered it
+        public string Area = "";    // the zone's generated area id: "Map..." for maps
+        public long Seed;           // this runner's own instance seed: a new map, not the same one again
+        public bool InMap => MapBuckets.IsMap(Area);
         public string ReadyFor = ""; // id of the ready check this runner answered
         public string Problem = "";  // a Problems code: their setup can't be trusted yet
         public DateTime LastSeen;   // local time of the last update

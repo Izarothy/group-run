@@ -16,6 +16,7 @@ namespace GroupRun
         public string RunnerId = Guid.NewGuid().ToString("N").Substring(0, 12);
         public string RunnerMachine = Environment.MachineName; // the PC RunnerId was made on
         public bool Voice = true;
+        public bool Gamble;                 // say "gamble axe" and the like in the first town after levels 3, 7, 11, 24 and 28
         public bool Overlay;                // buttons hidden: just the board, for OBS
         public int HostPort = 47321;        // admin: the port runners connect to
         public string HostSecret = "";      // admin: the secret part of the join code, made on first host

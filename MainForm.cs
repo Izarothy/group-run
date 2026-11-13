@@ -36,6 +36,7 @@ namespace GroupRun
         readonly Timer tick = new Timer { Interval = 100 };
         readonly Voice voice = new Voice();
         ChatMacro macro;
+        readonly UiField chat;  // admin only: a typed line, spoken to the whole group
         readonly NotifyIcon tray;
         readonly List<Dictionary<string, object>> detail = new List<Dictionary<string, object>>();
         DateTime lastDetailSent = DateTime.MinValue;
@@ -57,6 +58,9 @@ namespace GroupRun
         Version newestSeen = Updater.Current;
         Version declined;       // turned down this session: the quiet checks don't ask again
         readonly Timer updateCheck = new Timer { Interval = 60 * 60 * 1000 };
+        readonly MapBuckets maps;
+        DateTime mapCheckedFor; // the admin's zone entry last looked at for a map call
+        string mapCalled = "";  // the admin's map instance last called: a portal back in is the same map
 
         /// <param name="sim">Sim mode: settings and updates are off, and runs are saved to a temp folder.</param>
         /// <param name="primary">Speaks and has the tray icon; the sim makes only one window primary.</param>
@@ -72,6 +76,8 @@ namespace GroupRun
             chrome.IsAdmin = settings.IsAdmin;
             chrome.GroupCode = settings.IsAdmin ? "" : "Waiting for the admin to start";
             chrome.ShowControls = !settings.Overlay;
+            maps = settings.IsAdmin && !sim ? MapBuckets.Load() : new MapBuckets();
+            chrome.Maps = maps;
 
             Text = sim ? $"{settings.DisplayName}{(settings.IsAdmin ? " · admin" : "")} · sim" : "Group Run";
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -83,6 +89,19 @@ namespace GroupRun
             ContextMenuStrip = BuildMenu();
             if (primary)
                 tray = new NotifyIcon { Icon = Icon, Text = Text, ContextMenuStrip = ContextMenuStrip, Visible = true };
+            if (settings.IsAdmin)
+            {
+                chat = new UiField(0);
+                chat.Box.MaxLength = 200;
+                chat.Box.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode != Keys.Enter)
+                        return;
+                    e.SuppressKeyPress = true; // no ding
+                    SendChat();
+                };
+                Controls.Add(chat);
+            }
             FitToBoard();
 
             tick.Tick += (s, e) => Tick();
@@ -96,7 +115,10 @@ namespace GroupRun
             feed.Update(local, run, DateTime.Now, new List<Dictionary<string, object>>());
             SendSelf(force: true);
             if (settings.IsAdmin)
+            {
                 PublishSplits();
+                relay.Publish(maps.ToMessage());
+            }
             if (!sim)
             {
                 macro = new ChatMacro(settings.MacroKey);
@@ -105,6 +127,10 @@ namespace GroupRun
         }
 
         DateTime? calledIn;     // the zone entry (ZoneSince) of the last callout; none yet
+        readonly Dictionary<string, DateTime> calledOut = new Dictionary<string, DateTime>(); // callouts typed in party chat, until the log shows them
+        readonly GroupCalls groupCalls = new GroupCalls();
+        int heard;              // "say" messages received, for the self-test
+        readonly GamblePrompts gamble = new GamblePrompts();
         bool weaverReached;     // someone has been in The Weaver's Chambers this run: the Western Forest waypoint is old news
 
         /// <summary>
@@ -132,7 +158,60 @@ namespace GroupRun
                 : "swirl " + name;
             if (!sim)
                 ChatMacro.Type("%" + text); // the sim has no game to type into
+            calledOut[text] = DateTime.Now; // already sent: not again when the log shows it in party chat
+            SayToGroup(text);
+        }
+
+        /// <summary>The self-test's way to type a line in the admin's chat box and press Enter.</summary>
+        public void Chat(string text)
+        {
+            chat.Text = text;
+            SendChat();
+        }
+
+        /// <summary>Admin: the line typed in the chat box, to the group.</summary>
+        void SendChat()
+        {
+            var text = chat.Text.Trim();
+            chat.Text = "";
+            if (text.Length > 0)
+                SayToGroup(text);
+        }
+
+        /// <summary>Spoken by every runner's app, ours included.</summary>
+        void SayToGroup(string text) =>
             relay.Publish(new Dictionary<string, object> { ["t"] = "say", ["from"] = self.Id, ["text"] = text });
+
+        /// <summary>
+        /// What the voice says unasked: the admin's party chat and the campaign calls (<see cref="GroupCalls"/>) to
+        /// the whole group, and this runner's own gamble calls when they're on in Settings.
+        /// </summary>
+        void Prompt(DateTime now)
+        {
+            foreach (var line in feed.TakePartyChat())
+                if (settings.IsAdmin && !WasCalledOut(line, now))
+                    SayToGroup(line);
+            if (settings.IsAdmin)
+            {
+                if (run.Phase == Phase.Countdown && !run.Resuming)
+                    groupCalls.Reset(); // a new run
+                foreach (var line in groupCalls.Update(run.Runners.Values, self.Id, now, r => Spoken(r.Id)))
+                    SayToGroup(line);
+            }
+            if (gamble.Update(local.Zone, local.Level) is string call && settings.Gamble)
+            {
+                voice.Say(call);
+                ShowNote(call);
+            }
+        }
+
+        /// <summary>A party chat line that is a callout this app typed itself, and already sent to the group.</summary>
+        bool WasCalledOut(string line, DateTime now)
+        {
+            if (!calledOut.TryGetValue(line, out var at))
+                return false;
+            calledOut.Remove(line);
+            return now - at < TimeSpan.FromSeconds(30);
         }
 
         /// <summary>Admin: the split list from the .lss in Settings, with the group's PB and golds, to everyone.</summary>
@@ -206,7 +285,11 @@ namespace GroupRun
         /// <summary>One line of state for the self-test transcript.</summary>
         public string Describe() =>
             $"{settings.DisplayName} {run.Phase}{(run.Phase == Phase.Countdown ? " " + run.CountdownLeft.TotalSeconds.ToString("0.0") : "")}"
-            + $" {PanelView.FormatTime(run.Elapsed)} sees {run.Runners.Count}";
+            + $" {PanelView.FormatTime(run.Elapsed)} sees {run.Runners.Count}"
+            + $" heard {heard}" + (voice.Last != null ? $", last \"{voice.Last}\"" : "");
+
+        /// <summary>The last line this app's voice was asked to say.</summary>
+        public string LastSaid => voice.Last;
 
         float DpiScale => DeviceDpi / 96f;
 
@@ -216,10 +299,49 @@ namespace GroupRun
             menu.Items.Add("Settings", null, (s, e) => OpenSettings());
             menu.Items.Add($"Check for updates (v{Updater.Current})", null, async (s, e) => await CheckForUpdates()).Enabled = !sim;
             menu.Items.Add("Past runs", null, (s, e) => OpenPastRuns());
+            var sort = new ToolStripMenuItem("This map");
+            sort.DropDown.Renderer = menu.Renderer;
+            sort.DropDown.BackColor = Ui.Surface;
+            sort.DropDown.ForeColor = Ui.Fg;
+            foreach (var bucket in new[] { Bucket.Rush, Bucket.Mid, Bucket.Long, Bucket.None })
+                sort.DropDownItems.Add(bucket == Bucket.None ? "Unsorted" : bucket.ToString(), null, (s, e) => SortMap(bucket));
+            menu.Items.Add(sort);
+            menu.Opening += (s, e) =>
+            {
+                sort.Enabled = local.InMap;
+                sort.Text = local.InMap ? Short(local.Zone) : "This map";
+            };
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quit", null, (s, e) => Close());
             return menu;
         }
+
+        /// <summary>Sort the map this runner is in, for the whole group.</summary>
+        public void SortMap(Bucket bucket)
+        {
+            if (!local.InMap)
+                return;
+            relay.Publish(new Dictionary<string, object> { ["t"] = "bucket", ["map"] = local.Zone, ["b"] = MapBuckets.Name(bucket) });
+        }
+
+        /// <summary>
+        /// Admin: entering a new map calls it to the group, "Strand, long", so everyone opens the same bucket
+        /// (or a rush and a mid against a long). A portal back into the same instance isn't a new map.
+        /// </summary>
+        void CallMap()
+        {
+            if (!settings.IsAdmin || local.ZoneSince == mapCheckedFor)
+                return;
+            mapCheckedFor = local.ZoneSince;
+            var instance = local.Zone + "|" + local.Seed;
+            if (!local.InMap || instance == mapCalled)
+                return;
+            mapCalled = instance;
+            var bucket = maps.Of(local.Zone);
+            SayToGroup(Short(local.Zone) + ", " + (bucket == Bucket.None ? "unsorted" : MapBuckets.Name(bucket)));
+        }
+
+        static string Short(string zone) => zone.StartsWith("The ") ? zone.Substring(4) : zone;
 
         void Tick()
         {
@@ -241,6 +363,8 @@ namespace GroupRun
             KeepHistory(now); // before reading the feed, so the first zone of a run lands in its log
             var fresh = new List<Dictionary<string, object>>();
             feed.Update(local, run, now, fresh);
+            Prompt(now);
+            CallMap();
             if ((relay.Link == Link.Connected) != wasConnected)
             {
                 wasConnected = relay.Link == Link.Connected;
@@ -306,7 +430,11 @@ namespace GroupRun
                     runner.SetLevel(Convert.ToInt32(body["level"]), now);
                     runner.Xp = body.TryGetValue("xp", out var xp) && xp != null ? Convert.ToDouble(xp) : (double?)null;
                     runner.Deaths = Convert.ToInt32(body["deaths"]);
-                    runner.Zone = Get(body, "zone");
+                    var zone = Get(body, "zone");
+                    if (zone != runner.Zone)
+                        runner.ZoneSince = now - message.Age;
+                    runner.Zone = zone;
+                    runner.Area = Get(body, "area");
                     if (runner.Zone == "The Weaver's Chambers") weaverReached = true;
                     runner.ReadyFor = Get(body, "ready");
                     runner.Problem = Get(body, "problem");
@@ -317,6 +445,23 @@ namespace GroupRun
                 case "detail":
                     TimeSplits(body);
                     break;
+                case "maps":
+                    maps.Replace((Dictionary<string, object>)body["buckets"]);
+                    break;
+                case "bucket":
+                    maps.Set(Get(body, "map"), MapBuckets.Parse(Get(body, "b")));
+                    if (settings.IsAdmin && !sim)
+                    {
+                        try
+                        {
+                            maps.Save();
+                        }
+                        catch (Exception e) when (e is System.IO.IOException || e is UnauthorizedAccessException)
+                        {
+                            ShowNote("Can't save maps.json");
+                        }
+                    }
+                    break;
                 case "splits":
                     run.Splits.Define(((System.Collections.IEnumerable)body["names"]).Cast<object>().Select(n => n.ToString()).ToArray(),
                         SplitRecords.FromMs(((System.Collections.IEnumerable)body["pb"]).Cast<object>()),
@@ -324,6 +469,7 @@ namespace GroupRun
                     FitToBoard();
                     break;
                 case "say":
+                    heard++;
                     voice.Say(Get(body, "text"));
                     ShowNote(run.NameOf(Get(body, "from")) + ": " + Get(body, "text"));
                     break;
@@ -378,7 +524,10 @@ namespace GroupRun
                 case "reset":
                     SendControl(action);
                     if (settings.IsAdmin)
+                    {
                         PublishSplits(); // the next run compares against the PB and golds just saved
+                        relay.Publish(maps.ToMessage()); // a reset starts the hub's history over
+                    }
                     break;
                 case "callout":
                     Callout();
@@ -420,7 +569,7 @@ namespace GroupRun
         void SendSelf(bool force)
         {
             var now = DateTime.Now;
-            var key = $"{local.Level}|{local.Deaths}|{local.Zone}|{local.ReadyFor}|{settings.DisplayName}|{feed.Problem}";
+            var key = $"{local.Level}|{local.Deaths}|{local.Zone}|{local.Area}|{local.ReadyFor}|{settings.DisplayName}|{feed.Problem}";
             var xpMoved = local.Xp.HasValue && (!lastSentXp.HasValue || Math.Abs(local.Xp.Value - lastSentXp.Value) >= 0.002);
             var due = force || key != lastSentKey && now - lastSent > TimeSpan.FromSeconds(1)
                 || xpMoved && now - lastSent > XpUpdateEvery
@@ -434,6 +583,8 @@ namespace GroupRun
             self.Xp = local.Xp;
             self.Deaths = local.Deaths;
             self.Zone = local.Zone;
+            self.ZoneSince = local.ZoneSince;
+            self.Area = local.Area;
             if (self.Zone == "The Weaver's Chambers") weaverReached = true;
             self.ReadyFor = local.ReadyFor;
             self.Problem = feed.Problem;
@@ -441,7 +592,7 @@ namespace GroupRun
             {
                 ["t"] = "runner", ["id"] = self.Id, ["name"] = settings.DisplayName, ["level"] = local.Level,
                 ["xp"] = local.Xp.HasValue ? Math.Round(local.Xp.Value, 4) : (object)null,
-                ["deaths"] = local.Deaths, ["zone"] = local.Zone, ["ready"] = local.ReadyFor,
+                ["deaths"] = local.Deaths, ["zone"] = local.Zone, ["area"] = local.Area, ["ready"] = local.ReadyFor,
                 ["problem"] = feed.Problem, ["ver"] = Updater.Current.ToString(),
             });
         }
@@ -658,9 +809,22 @@ namespace GroupRun
                 Ui.Tell(this, "Restart to apply.");
         }
 
+        /// <summary>Size the window to the board, plus the admin's chat box under it unless the board is an overlay.</summary>
         void FitToBoard()
         {
-            var size = new Size((int)Math.Ceiling(PanelView.Width * DpiScale), (int)Math.Ceiling(PanelView.HeightFor(run, chrome) * DpiScale));
+            var width = (int)Math.Ceiling(PanelView.Width * DpiScale);
+            var height = (int)Math.Ceiling(PanelView.HeightFor(run, chrome) * DpiScale);
+            if (chat != null)
+            {
+                chat.Visible = chrome.ShowControls; // the overlay is what OBS shows: keep it to the board
+                if (chat.Visible)
+                {
+                    var pad = (int)Math.Round(12 * DpiScale);
+                    chat.SetBounds(pad, height, width - 2 * pad, (int)Math.Round(36 * DpiScale));
+                    height += chat.Height + pad;
+                }
+            }
+            var size = new Size(width, height);
             if (ClientSize != size)
                 ClientSize = size;
         }

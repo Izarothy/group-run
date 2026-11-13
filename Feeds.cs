@@ -15,6 +15,9 @@ namespace GroupRun
 
         /// <summary>What stops this runner's numbers from being trusted (a <see cref="Problems"/> code), or "".</summary>
         string Problem { get; }
+
+        /// <summary>The lines this runner typed in party chat since the last call. Never part of the run history.</summary>
+        List<string> TakePartyChat();
     }
 
     /// <summary>The things that can be wrong with a runner's setup: what the board says, and how to fix it.</summary>
@@ -51,6 +54,7 @@ namespace GroupRun
         bool gameRunning;
         string me;              // this runner's character, once known
         bool starting;          // the countdown to a new run (not a resume) is on
+        List<string> partyChat = new List<string>();
         List<GameEvent> earlier; // the log before the app started, until the first update has used it
         int loadsWithoutMessage; // areas generated since the log last wrote a message line (zone, level-up, chat)
         const int QuietAfterLoads = 3; // some clients stop writing message lines but keep writing loads
@@ -69,6 +73,13 @@ namespace GroupRun
             : !gameRunning ? "game"
             : LogQuiet ? "log-quiet"
             : "";
+
+        public List<string> TakePartyChat()
+        {
+            var lines = partyChat;
+            partyChat = new List<string>();
+            return lines;
+        }
 
         public void Update(Runner self, Run run, DateTime now, List<Dictionary<string, object>> detail)
         {
@@ -100,6 +111,12 @@ namespace GroupRun
                     ["tick"] = e.Tick,
                 };
                 NoteLogHealth(e, detail);
+                if (e.Kind == GameEventKind.PartyChat)
+                {
+                    if (string.Equals(e.Text, me, StringComparison.OrdinalIgnoreCase) && e.Said.Length > 0)
+                        partyChat.Add(e.Said);
+                    continue; // what was said stays out of the run's records
+                }
                 switch (e.Kind)
                 {
                     case GameEventKind.LevelUp:
@@ -140,6 +157,8 @@ namespace GroupRun
                         record["zone"] = e.Text;
                         break;
                     case GameEventKind.Area:
+                        self.Area = e.Text;
+                        self.Seed = e.Seed;
                         record["area"] = e.Text;
                         record["alvl"] = e.Level;
                         record["seed"] = e.Seed;
@@ -220,6 +239,23 @@ namespace GroupRun
 
         public string Problem => "";
 
+        List<string> partyChat = new List<string>();
+
+        (string Name, string Area, long Seed)? map; // the self-test put this runner somewhere outside the campaign
+
+        /// <summary>The self-test's way to move this runner into a map or hideout instance.</summary>
+        public void Enter(string zone, string area, long seed) => map = (zone, area, seed);
+
+        /// <summary>The self-test's way to type a line in this runner's party chat.</summary>
+        public void Type(string line) => partyChat.Add(line);
+
+        public List<string> TakePartyChat()
+        {
+            var lines = partyChat;
+            partyChat = new List<string>();
+            return lines;
+        }
+
         public void Update(Runner self, Run run, DateTime now, List<Dictionary<string, object>> detail)
         {
             var progress = 1 + pace * Math.Pow(run.Elapsed.TotalMinutes, 0.8);
@@ -228,11 +264,19 @@ namespace GroupRun
             self.SetLevel((int)progress, now);
             self.Xp = progress - (int)progress;
 
+            if (map is (string name, string area, long seed))
+            {
+                if (name != self.Zone || seed != self.Seed)
+                    self.ZoneSince = now;
+                (self.Zone, self.Area, self.Seed) = (name, area, seed);
+                return;
+            }
             var live = run.Elapsed > TimeSpan.Zero; // from the first moment of the run, through pauses
             var zone = live ? Zones[Math.Min(Zones.Length - 1, (int)((progress - 1) * 2.2))] : default;
             if (live && zone.Name != self.Zone)
             {
                 self.ZoneSince = now;
+                self.Area = zone.Area;
                 detail.Add(new Dictionary<string, object> { ["k"] = "load" });
                 detail.Add(new Dictionary<string, object> { ["k"] = "area", ["area"] = zone.Area, ["alvl"] = zone.Level, ["seed"] = 0 });
                 detail.Add(new Dictionary<string, object> { ["k"] = "zone", ["zone"] = zone.Name });

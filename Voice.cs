@@ -16,6 +16,9 @@ namespace GroupRun
 
         public bool Enabled = true;
 
+        /// <summary>The last line asked for, said or not (the self-test runs silent).</summary>
+        public string Last { get; private set; }
+
         // names the synthesizer spells out letter by letter, written the way they're said
         static readonly Dictionary<string, string> Pronounced = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -34,6 +37,7 @@ namespace GroupRun
         /// <summary>Say <paramref name="text"/>, cutting off anything still being said so the count stays on time.</summary>
         public void Say(string text)
         {
+            Last = text;
             if (!Enabled)
                 return;
             synth.SpeakAsyncCancelAll();

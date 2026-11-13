@@ -22,6 +22,8 @@ namespace GroupRun
             var transcript = new List<string>();
             var hub = new Hub(0, "selftest");
             var forms = new List<MainForm>();
+            var feeds = new List<SimFeed>();
+            transcript.AddRange(Checks(output));
             var splits = Path.Combine(output, "splits.lss"); // zones the sim reaches in its first minute
             File.WriteAllText(splits, "<Run><Segments>" + string.Concat(new[] { "Coast", "Mud Flats", "Submerged Passage", "Lower Prison", "Kitava kill" }
                 .Select(n => $"<Segment><Name>{n}</Name></Segment>")) + "</Segments></Run>");
@@ -31,7 +33,8 @@ namespace GroupRun
                 IRelay relay = i == 0
                     ? (IRelay)new HubRelay(hub)
                     : new WsRelay(new JoinCode { Host = "127.0.0.1:" + hub.Port, Secret = "selftest" });
-                forms.Add(new MainForm(settings, relay, new SimFeed(i), sim: true, primary: false));
+                feeds.Add(new SimFeed(i));
+                forms.Add(new MainForm(settings, relay, feeds[i], sim: true, primary: false));
             }
             var admin = forms[0];
 
@@ -53,9 +56,27 @@ namespace GroupRun
                 (51, "callout heard", null),
                 (52, "r2 callout again", () => forms[1].Press("callout")),
                 (53, "second callout heard", null),
-                (55, "running", null),
-                (56, "admin finishes", () => admin.Press("finish")),
-                (63, "finished", null),
+                (54, "admin chat", () => admin.Chat("kitava next, pack up")),
+                (54.5, "chat heard", () => SaveWindow(admin, Path.Combine(output, "admin-window.png"))),
+                (54.8, "admin party chat", () => feeds[0].Type("tp to town")),
+                (55.3, "party chat heard", null),
+                (55.5, "admin callout", () => admin.Press("callout")),
+                (55.8, "callout shows in party chat", () => feeds[0].Type(admin.LastSaid)),
+                (56.3, "not said twice", null),
+                (56.5, "r2 party chat", () => feeds[1].Type("not the admin")),
+                (57, "only the admin's is said", null),
+                (57.5, "admin finishes", () => admin.Press("finish")),
+                (64, "finished", null),
+                (65, "admin opens a strand", () => feeds[0].Enter("Strand", "MapWorldsStrand", 11)),
+                (66, "unsorted called", null),
+                (66.5, "r2 joins the strand", () => feeds[1].Enter("Strand", "MapWorldsStrand", 11)),
+                (67, "r2 sorts it long", () => forms[1].SortMap(Bucket.Long)),
+                (67.5, "admin to hideout", () => feeds[0].Enter("Hideout", "HideoutFelled", 12)),
+                (68.5, "admin opens another strand", () => feeds[0].Enter("Strand", "MapWorldsStrand", 13)),
+                (69.5, "long called", null),
+                (70, "admin to hideout again", () => feeds[0].Enter("Hideout", "HideoutFelled", 12)),
+                (71, "portal back into the same strand", () => feeds[0].Enter("Strand", "MapWorldsStrand", 13)),
+                (72.5, "not called again", null),
             };
 
             var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -80,6 +101,87 @@ namespace GroupRun
             };
             timer.Start();
             Application.Run(new ApplicationContext());
+        }
+
+        /// <summary>The voice prompts and the party chat parser, without windows: one line each, "ok" or what went wrong.</summary>
+        static List<string> Checks(string output)
+        {
+            var lines = new List<string>();
+            void Check(string what, object got, object want) =>
+                lines.Add($"check {what}: " + (Equals(got, want) ? "ok" : $"FAILED, got \"{got}\", want \"{want}\""));
+
+            var calls = new GroupCalls();
+            var now = new DateTime(2026, 11, 13, 20, 0, 0);
+            var me = new Runner { Id = "me", Name = "me", Level = 10 };
+            var a = new Runner { Id = "a", Name = "a", Level = 12 };
+            var b = new Runner { Id = "b", Name = "b", Level = 13 };
+            var group = new[] { me, a, b };
+            string Calls(double seconds, string zoneMe, string zoneA, string zoneB)
+            {
+                now = now.AddSeconds(seconds);
+                (me.Zone, a.Zone, b.Zone) = (zoneMe, zoneA, zoneB);
+                foreach (var r in group) r.LastSeen = now;
+                return string.Join(" / ", calls.Update(group, me.Id, now, r => r.Name));
+            }
+            Check("calls: the strand", Calls(0, "The Coast", "The Coast", "The Coast"), "");
+            Check("calls: first into act 2 town, highest level", Calls(1, "The Southern Forest", "The Forest Encampment", "The Southern Forest"), "b weaver");
+            Check("calls: weaver once", Calls(1, "The Forest Encampment", "The Forest Encampment", "The Forest Encampment"), "");
+            Check("calls: wetlands, not everyone in", Calls(1, "The Wetlands", "The Wetlands", "The Western Forest"), "");
+            Check("calls: wetlands, all in, waiting", Calls(1, "The Wetlands", "The Wetlands", "The Wetlands"), "");
+            Check("calls: wetlands, 14 s on", Calls(14, "The Wetlands", "The Wetlands", "The Wetlands"), "");
+            Check("calls: wetlands, 15 s on", Calls(1, "The Vaal Ruins", "The Wetlands", "The Wetlands"), "b vaal ruins");
+            a.Level = 18;
+            Check("calls: a reaches 18 first", Calls(1, "The Vaal Ruins", "The Vaal Ruins", "The Vaal Ruins"), "");
+            me.Level = 21; b.Level = 18;
+            Calls(1, "The Northern Forest", "The Northern Forest", "The Northern Forest");
+            Check("calls: oversoul goes to the first to 18, not the highest", Calls(15, "The Northern Forest", "The Northern Forest", "The Northern Forest"), "a pushes oversoul");
+            Check("calls: res, town before the temple", Calls(1, "The Sarn Encampment", "The Northern Forest", "The Sarn Encampment"), "");
+            Check("calls: res, temple", Calls(1, "The Sarn Encampment", GroupCalls.Temple, "The Sarn Encampment"), "");
+            Check("calls: res, already in town is no entry", Calls(1, "The Sarn Encampment", GroupCalls.Temple, "The Sarn Encampment"), "");
+            Check("calls: res, town after the temple", Calls(1, "The Sarn Encampment", "The Sarn Encampment", "The Sarn Encampment"), "check res");
+            Check("calls: res once", Calls(1, "Highgate", "Highgate", "Highgate"), "");
+            b.Level = 30;
+            Calls(1, "The Dried Lake", "The Dried Lake", "Highgate");
+            now = now.AddSeconds(30);
+            me.LastSeen = a.LastSeen = now; // b went offline: the two in the lake are everyone
+            Check("calls: daresso, everyone online in, waiting", string.Join(" / ", calls.Update(group, me.Id, now, r => r.Name)), "");
+            now = now.AddSeconds(15);
+            me.LastSeen = a.LastSeen = now;
+            Check("calls: daresso, highest online that isn't the admin", string.Join(" / ", calls.Update(group, me.Id, now, r => r.Name)), "a pushes daresso");
+            calls.Reset();
+            Check("calls: after a reset, nothing before the temple", Calls(1, "The Sarn Encampment", "Lioneye's Watch", "Lioneye's Watch"), "");
+
+            var gamble = new GamblePrompts();
+            Check("gamble: level 2 town", gamble.Update("Lioneye's Watch", 2), null);
+            Check("gamble: level 3 out of town", gamble.Update("The Coast", 3), null);
+            Check("gamble: first town after 3", gamble.Update("Lioneye's Watch", 3), "gamble axe");
+            Check("gamble: same town again", gamble.Update("Lioneye's Watch", 4), null);
+            gamble.Update("The Mud Flats", 7);
+            Check("gamble: 7 and 11 passed between towns, one call", gamble.Update("Lioneye's Watch", 12), "gamble sword");
+            gamble.Update("The Coast", 12);
+            Check("gamble: 11 already called", gamble.Update("Lioneye's Watch", 12), null);
+            gamble.Update("The Ledge", 24);
+            Check("gamble: 24", gamble.Update("Highgate", 24), "gamble 4links");
+            gamble.Update("The Ledge", 28);
+            Check("gamble: 28", gamble.Update("Highgate", 28), "gamble axe");
+            gamble.Update("The Twilight Strand", 1);
+            gamble.Update("The Coast", 3);
+            Check("gamble: new character starts over", gamble.Update("Lioneye's Watch", 3), "gamble axe");
+
+            var path = Path.Combine(output, "Client.txt");
+            File.WriteAllText(path, "");
+            var log = new GameLog(path, "hero");
+            File.AppendAllLines(path, new[]
+            {
+                "2026/11/13 20:00:00 1000 abc [INFO Client 1] %<GG> Hero: tp to town ",
+                "2026/11/13 20:00:01 1001 abc [INFO Client 1] %Other: hi",
+                "2026/11/13 20:00:02 1002 abc [INFO Client 1] #Hero: in global",
+                "2026/11/13 20:00:03 1003 abc [INFO Client 1] %Hero: kitava: next",
+            });
+            var said = log.ReadNew().Where(e => e.Kind == GameEventKind.PartyChat).Select(e => e.Said);
+            Check("party chat: own lines only, guild tag and colons handled", string.Join(" / ", said), "tp to town / kitava: next");
+            File.Delete(path);
+            return lines;
         }
 
         static void Finish(string output, List<MainForm> forms, List<string> transcript)
@@ -117,6 +219,16 @@ namespace GroupRun
                     board.Dispose();
                 }
                 sheet.Save(path, ImageFormat.Png);
+            }
+        }
+
+        /// <summary>The whole window, child controls included (the admin's chat box), not just the board.</summary>
+        static void SaveWindow(Form form, string path)
+        {
+            using (var bitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
+            {
+                form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.ClientSize));
+                bitmap.Save(path, ImageFormat.Png);
             }
         }
 
@@ -237,6 +349,7 @@ namespace GroupRun
             public StuckFeed(string problem) => Problem = problem;
             public string Problem { get; }
             public void Update(Runner self, GroupRun.Run run, DateTime now, List<Dictionary<string, object>> detail) { }
+            public List<string> TakePartyChat() => new List<string>();
         }
 
         /// <summary>

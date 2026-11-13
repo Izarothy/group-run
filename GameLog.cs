@@ -17,6 +17,7 @@ namespace GroupRun
         Joined,    // a player joined this instance
         Left,      // a player left this instance
         Afk,       // AFK mode turned on or off
+        PartyChat, // a line this character typed in party chat
         System,    // any other game system message, kept raw for later analysis
     }
 
@@ -28,13 +29,14 @@ namespace GroupRun
         public int Level;           // LevelUp, Area
         public string Text = "";    // Zone name, Area id, player name (also on LevelUp and Death), AFK state, or the raw system message
         public long Seed;           // Area
+        public string Said = "";    // PartyChat: the line typed
     }
 
     /// <summary>
     /// Follows Client.txt from the moment the app starts. Keeps what matters for timing a run: zones and
     /// their areas, loading screens, this character's levels and deaths, who joins and leaves the instance,
-    /// AFK, and other system messages raw. Chat in any channel is never kept. Level-ups and deaths carry the
-    /// character's name, since party members' show up in the same log; with a known character name, other
+    /// AFK, and other system messages raw. Chat is never kept, except party lines, which carry who typed them
+    /// (the admin's own are spoken to the group). Level-ups, deaths and party lines carry the character's name, since party members' show up in the same log; with a known character name, other
     /// players' are dropped here, otherwise the caller decides which name is this runner.
     /// </summary>
     public sealed class GameLog
@@ -48,6 +50,7 @@ namespace GroupRun
         static readonly Regex Connecting = new Regex(@"^Connecting to instance server", RegexOptions.Compiled);
         static readonly Regex JoinedArea = new Regex(@"^: (.+) has joined the area\.$", RegexOptions.Compiled);
         static readonly Regex LeftArea = new Regex(@"^: (.+) has left the area\.$", RegexOptions.Compiled);
+        static readonly Regex Party = new Regex(@"^%(?:<[^>]*> )?([^:]+): (.*)$", RegexOptions.Compiled); // "%<GUILD> Name: text"
         static readonly Regex AfkMode = new Regex(@"^: AFK mode is now (ON|OFF)", RegexOptions.Compiled);
 
         readonly string path;
@@ -166,8 +169,16 @@ namespace GroupRun
                 e.Kind = GameEventKind.Load; // the server address on this line is not kept
                 return e;
             }
+            if (Party.Match(message) is Match party && party.Success)
+            {
+                if (character.Length > 0 && !IsCharacter(party.Groups[1].Value)) return null;
+                e.Kind = GameEventKind.PartyChat;
+                e.Text = party.Groups[1].Value;
+                e.Said = party.Groups[2].Value.Trim();
+                return e;
+            }
             if (!message.StartsWith(": "))
-                return null; // chat ("#", "$", "@", "%", "&" or a name) and engine noise
+                return null; // other chat ("#", "$", "@", "&" or a name) and engine noise
 
             if (LevelUp.Match(message) is Match level && level.Success)
             {

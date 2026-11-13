@@ -6,7 +6,7 @@ namespace GroupRun
 {
     /// <summary>
     /// First-run and Settings dialog: name, Client.txt, runner or admin (join code to paste, or the hosted one to
-    /// copy), on top, voice, buttons. Changes apply on Save.
+    /// copy), on top, voice, gamble calls, buttons. Changes apply on Save.
     /// </summary>
     public sealed class SetupForm : Form
     {
@@ -19,6 +19,7 @@ namespace GroupRun
         readonly UiSegment role = new UiSegment("Runner", "Admin");
         readonly UiSegment onTop = new UiSegment("While live", "Always", "Never");
         readonly UiSegment voice = new UiSegment("On", "Off");
+        readonly UiSegment gamble = new UiSegment("On", "Off");
         readonly UiSegment buttons = new UiSegment("Show", "Hide");
         readonly UiButton copy = new UiButton { Text = "Copy", Margin = new Padding(8, 1, 0, 0) };
         readonly Label splitsState = new Label { AutoSize = true, Font = Ui.BodyMedium, Margin = new Padding(0, 9, 12, 0), MaximumSize = new Size(FieldWidth - 160, 0) };
@@ -78,6 +79,10 @@ namespace GroupRun
             voice.Selected = settings.Voice ? 0 : 1;
             layout.Controls.Add(voice);
 
+            layout.Controls.Add(Ui.Caption("Gamble calls"));
+            gamble.Selected = settings.Gamble ? 0 : 1;
+            layout.Controls.Add(gamble);
+
             layout.Controls.Add(Ui.Caption("Buttons"));
             buttons.Selected = settings.Overlay ? 1 : 0;
             layout.Controls.Add(buttons);
@@ -92,6 +97,7 @@ namespace GroupRun
                 settings.SplitsFile = splitsFile;
                 settings.OnTop = OnTopValues[onTop.Selected];
                 settings.Voice = voice.Selected == 0;
+                settings.Gamble = gamble.Selected == 0;
                 settings.Overlay = buttons.Selected == 1;
             };
             var footer = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Width = FieldWidth, Height = 60, Margin = Padding.Empty, Padding = new Padding(0, 24, 0, 0), BackColor = Ui.Bg };
