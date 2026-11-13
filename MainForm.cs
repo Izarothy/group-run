@@ -195,8 +195,9 @@ namespace GroupRun
             {
                 if (run.Phase == Phase.Countdown && !run.Resuming)
                     groupCalls.Reset(); // a new run
-                foreach (var line in groupCalls.Update(run.Runners.Values, self.Id, now, r => Spoken(r.Id)))
-                    SayToGroup(line);
+                if (run.Phase == Phase.Running) // between runs people walk the campaign: no calls
+                    foreach (var line in groupCalls.Update(run.Runners.Values, self.Id, now, r => Spoken(r.Id)))
+                        SayToGroup(line);
             }
             if (gamble.Update(local.Zone, local.Level) is string call && settings.Gamble)
             {
